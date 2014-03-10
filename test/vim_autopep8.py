@@ -1,6 +1,6 @@
 """Run autopep8 on the selected buffer in Vim.
 
-map <C-I> :pyfile <path_to>/autopep8_vim.py<CR>
+map <C-I> :pyfile <path_to>/vim_autopep8.py<CR>
 
 """
 
@@ -14,7 +14,7 @@ if vim.eval('&syntax') == 'python':
     options = autopep8.parse_args(['--range',
                                    str(1 + vim.current.range.start),
                                    str(1 + vim.current.range.end),
-                                   ''])[0]
+                                   ''])
 
     formatted = autopep8.fix_code(source, options=options)
 

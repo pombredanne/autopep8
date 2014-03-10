@@ -3,6 +3,7 @@ autopep8 is written and maintained by Hideo Hattori and various contributors.
 Contributors
 ------------
 - Steven Myint (https://github.com/myint)
+- Bill Wendling (https://github.com/gwelymernans)
 
 Patches, Bug Reports, and Suggestions
 -------------------------------------
@@ -17,3 +18,4 @@ Patches, Bug Reports, and Suggestions
 - Filip Noetzel (https://github.com/peritus)
 - Erik Bray (https://github.com/iguananaut)
 - Christopher Medrela (https://github.com/chrismedrela)
+- 小明 (https://github.com/dongweiming)

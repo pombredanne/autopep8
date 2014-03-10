@@ -3,8 +3,8 @@ autopep8
 ========
 
 .. image:: https://travis-ci.org/hhatto/autopep8.png?branch=master
-   :target: https://travis-ci.org/hhatto/autopep8
-   :alt: Build status
+    :target: https://travis-ci.org/hhatto/autopep8
+    :alt: Build status
 
 autopep8 automatically formats Python code to conform to the `PEP 8`_ style
 guide. It uses the pep8_ utility to determine what parts of the code needs to
@@ -34,52 +34,67 @@ autopep8 requires pep8_.
 Usage
 =====
 
-To modify a file in place (with all fixes enabled)::
+To modify a file in place (with aggressive level 2)::
 
-    $ autopep8 --in-place --aggressive <filename>
+    $ autopep8 --in-place --aggressive --aggressive <filename>
 
 Before running autopep8.
 
 .. code-block:: python
 
-    import sys, os;
+    import math, sys;
 
     def example1():
-        a=(   1,2, 3,'a'  );
         ####This is a long comment. This should be wrapped to fit within 72 characters.
-        some_variable = [100,200,300,9876543210,'This is a long string that goes on']
+        some_tuple=(   1,2, 3,'a'  );
+        some_variable={'long':'Long code lines should be wrapped witihn 79 characters.',
+        'other':[math.pi, 100,200,300,9876543210,'This is a long string that goes on'],
+        'more':{'inner':'This whole logical line should be wrapped.',some_tuple:[1,
+        20,300,40000,500000000,60000000000000000]}}
+        return (some_tuple, some_variable)
     def example2(): return {'has_key() is deprecated':True}.has_key({'f':2}.has_key(''));
     class Example3(   object ):
         def __init__    ( self, bar ):
          #Comments should have a space after the hash.
          if bar : bar+=1;  bar=bar* bar   ; return bar
          else:
-                        indentation_in_strings_should_not_be_touched = """
-    		           hello
-    world
+                        some_string = """
+    		           Indentation in multiline strings should not be touched.
+    Only actual code should be reindented.
     """
-                        raise ValueError, indentation_in_strings_should_not_be_touched
-        def my_method(self):
-                                                  print(self);
+                        return (sys.path, some_string)
 
 After running autopep8.
 
 .. code-block:: python
 
+    import math
     import sys
-    import os
 
 
     def example1():
-        a = (1, 2, 3, 'a')
         # This is a long comment. This should be wrapped to fit within 72
         # characters.
-        some_variable = [
-            100,
-            200,
-            300,
-            9876543210,
-            'This is a long string that goes on']
+        some_tuple = (1, 2, 3, 'a')
+        some_variable = {
+            'long': 'Long code lines should be wrapped witihn 79 characters.',
+            'other': [
+                math.pi,
+                100,
+                200,
+                300,
+                9876543210,
+                'This is a long string that goes on'],
+            'more': {
+                'inner': 'This whole logical line should be wrapped.',
+                some_tuple: [
+                    1,
+                    20,
+                    300,
+                    40000,
+                    500000000,
+                    60000000000000000]}}
+        return (some_tuple, some_variable)
 
 
     def example2():
@@ -95,48 +110,52 @@ After running autopep8.
                 bar = bar * bar
                 return bar
             else:
-                indentation_in_strings_should_not_be_touched = """
-    		           hello
-    world
+                some_string = """
+    		           Indentation in multiline strings should not be touched.
+    Only actual code should be reindented.
     """
-                raise ValueError(indentation_in_strings_should_not_be_touched)
-
-        def my_method(self):
-            print(self)
-
+                return (sys.path, some_string)
 
 Options::
 
-    Usage: autopep8 [options] [filename [filename ...]]
-    Use filename '-'  for stdin.
+    usage: autopep8 [-h] [--version] [-v] [-d] [-i] [-r] [-j n] [-p n] [-a]
+                    [--experimental] [--exclude globs] [--list-fixes]
+                    [--ignore errors] [--select errors] [--max-line-length n]
+                    [--range line line] [--indent-size n]
+                    [files [files ...]]
 
     Automatically formats Python code to conform to the PEP 8 style guide.
 
-    Options:
-      --version             show program's version number and exit
+    positional arguments:
+      files                 files to format or '-' for standard in
+
+    optional arguments:
       -h, --help            show this help message and exit
+      --version             show program's version number and exit
       -v, --verbose         print verbose messages; multiple -v result in more
                             verbose messages
       -d, --diff            print the diff for the fixed source
       -i, --in-place        make changes to files in place
       -r, --recursive       run recursively over directories; must be used with
                             --in-place or --diff
-      -j n, --jobs=n        number of parallel jobs; match CPU count if value is
+      -j n, --jobs n        number of parallel jobs; match CPU count if value is
                             less than 1
-      -p n, --pep8-passes=n
+      -p n, --pep8-passes n
                             maximum number of additional pep8 passes (default:
                             infinite)
       -a, --aggressive      enable non-whitespace changes; multiple -a result in
                             more aggressive changes
-      --exclude=globs       exclude file/directory names that match these comma-
+      --experimental        enable experimental fixes
+      --exclude globs       exclude file/directory names that match these comma-
                             separated globs
       --list-fixes          list codes for fixes; used by --ignore and --select
-      --ignore=errors       do not fix these errors/warnings (default: E24)
-      --select=errors       fix only these errors/warnings (e.g. E4,W)
-      --max-line-length=n   set maximum allowed line length (default: 79)
-      --range=start end     only fix errors found within this inclusive range of
+      --ignore errors       do not fix these errors/warnings (default: E24)
+      --select errors       fix only these errors/warnings (e.g. E4,W)
+      --max-line-length n   set maximum allowed line length (default: 79)
+      --range line line     only fix errors found within this inclusive range of
                             line numbers (e.g. 1 99); line numbers are indexed at
                             1
+      --indent-size n       number of spaces per indent level (default 4)
 
 
 Features
@@ -145,7 +164,6 @@ Features
 autopep8 fixes the following issues_ reported by pep8_::
 
     E101 - Reindent all lines.
-    E111 - Reindent all lines.
     E121 - Fix indentation to be a multiple of four.
     E122 - Add absent indentation for hanging indentation.
     E123 - Align closing bracket to match opening bracket.
@@ -158,7 +176,9 @@ autopep8 fixes the following issues_ reported by pep8_::
     E211 - Remove extraneous whitespace.
     E22  - Fix extraneous whitespace around keywords.
     E224 - Remove extraneous whitespace around operator.
-    E22  - Fix missing whitespace around operator.
+    E226 - Fix missing whitespace around arithmetic operator.
+    E227 - Fix missing whitespace around bitwise/shift operator.
+    E228 - Fix missing whitespace around modulo operator.
     E231 - Add missing whitespace.
     E241 - Fix extraneous whitespace around keywords.
     E242 - Remove extraneous whitespace around operator.
@@ -179,7 +199,6 @@ autopep8 fixes the following issues_ reported by pep8_::
     E711 - Fix comparison with None.
     E712 - Fix comparison with boolean.
     E721 - Use "isinstance()" instead of comparing types directly.
-    W191 - Reindent all lines.
     W291 - Remove trailing whitespace.
     W293 - Remove trailing whitespace on blank line.
     W391 - Remove trailing blank lines.
@@ -250,11 +269,9 @@ Use as a module
 The simplest way of using autopep8 as a module is via the ``fix_code()``
 function.
 
-.. code-block:: python
-
-    >>> import autopep8
-    >>> autopep8.fix_code('x=       123\n')
-    'x = 123\n'
+>>> import autopep8
+>>> autopep8.fix_code('x=       123\n')
+'x = 123\n'
 
 
 Testing

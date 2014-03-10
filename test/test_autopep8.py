@@ -4,6 +4,7 @@
 from __future__ import unicode_literals
 
 import os
+import re
 import sys
 
 if sys.version_info < (2, 7):
@@ -12,8 +13,10 @@ else:
     import unittest
 
 import contextlib
+import io
 from subprocess import Popen, PIPE
 from tempfile import mkstemp
+import tokenize
 import warnings
 
 try:
@@ -40,6 +43,8 @@ else:
 
 
 class UnitTests(unittest.TestCase):
+
+    maxDiff = None
 
     def test_find_newline_only_cr(self):
         source = ['print 1\r', 'print 2\r', 'print3\r']
@@ -101,63 +106,20 @@ class UnitTests(unittest.TestCase):
             'a b',
             autopep8.fix_whitespace('a\t  \t  b', offset=1, replacement=' '))
 
-    def test_break_multiline(self):
-        self.assertEqual(
-            'foo_bar_zap_bing_bang_boom(\n    111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333,\n',
-            autopep8.break_multiline(
-                'foo_bar_zap_bing_bang_boom(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333,\n',
-                newline='\n', indent_word='    '))
-
-    def test_break_multiline_with_percent(self):
-        self.assertEqual(
-            'foo_bar_zap_bing_bang_boom(\n    "                                                                         %s" %\n',
-            autopep8.break_multiline(
-                'foo_bar_zap_bing_bang_boom("                                                                         %s" %\n',
-                newline='\n', indent_word='    '))
-
-    def test_break_multiline_with_long_function(self):
-        self.assertEqual(
-            'foo_bar_zap_bing_bang_boom_foo_bar_zap_bing_bang_boom_foo_bar_zap_bing_bang_boom(\n'
-            '    333,\n',
-            autopep8.break_multiline(
-                'foo_bar_zap_bing_bang_boom_foo_bar_zap_bing_bang_boom_foo_bar_zap_bing_bang_boom(333,\n',
-                newline='\n', indent_word='    '))
-
-    def test_break_multiline_should_not_break_too_short_line(self):
-        self.assertEqual(
-            None,
-            autopep8.break_multiline(
-                'fo(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333, 333,\n',
-                newline='\n', indent_word='    '))
-
-    def test_break_multiline_should_not_modify_comment(self):
-        self.assertEqual(
-            None,
-            autopep8.break_multiline(
-                '# foo_bar_zap_bing_bang_boom(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333,\n',
-                newline='\n', indent_word='    '))
-
-    def test_break_multiline_should_not_modify_lonely_brace(self):
-        self.assertEqual(
-            None,
-            autopep8.break_multiline(
-                '(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333, 222, 222, 222, 222, 333,\n',
-                newline='\n', indent_word='    '))
-
     def test_multiline_string_lines(self):
         self.assertEqual(
             set([2]),
             autopep8.multiline_string_lines(
-                """
+                """\
 '''
 '''
-""".lstrip()))
+"""))
 
     def test_multiline_string_lines_with_many(self):
         self.assertEqual(
             set([2, 7, 10, 11, 12]),
             autopep8.multiline_string_lines(
-                """
+                """\
 '''
 '''
 ''''''
@@ -170,63 +132,58 @@ class UnitTests(unittest.TestCase):
 
 
 '''
-""".lstrip()))
+"""))
 
     def test_multiline_string_should_not_report_single_line(self):
         self.assertEqual(
             set(),
             autopep8.multiline_string_lines(
-                """
+                """\
 '''abc'''
-""".lstrip()))
+"""))
 
     def test_multiline_string_should_not_report_docstrings(self):
         self.assertEqual(
             set([5]),
             autopep8.multiline_string_lines(
-                """
+                """\
 def foo():
     '''Foo.
     Bar.'''
     hello = '''
 '''
-""".lstrip()))
+"""))
 
     def test_supported_fixes(self):
-        self.assertIn('E101', [f[0] for f in autopep8.supported_fixes()])
+        self.assertIn('E121', [f[0] for f in autopep8.supported_fixes()])
 
     def test_shorten_comment(self):
         self.assertEqual('# ' + '=' * 72 + '\n',
                          autopep8.shorten_comment('# ' + '=' * 100 + '\n',
-                                                  '\n',
                                                   max_line_length=79))
 
     def test_shorten_comment_should_not_split_numbers(self):
         line = '# ' + '0' * 100 + '\n'
         self.assertEqual(line,
                          autopep8.shorten_comment(line,
-                                                  newline='\n',
                                                   max_line_length=79))
 
     def test_shorten_comment_should_not_split_words(self):
         line = '# ' + 'a' * 100 + '\n'
         self.assertEqual(line,
                          autopep8.shorten_comment(line,
-                                                  newline='\n',
                                                   max_line_length=79))
 
     def test_shorten_comment_should_not_split_urls(self):
         line = '# http://foo.bar/' + 'abc-' * 100 + '\n'
         self.assertEqual(line,
                          autopep8.shorten_comment(line,
-                                                  newline='\n',
                                                   max_line_length=79))
 
     def test_shorten_comment_should_not_modify_special_comments(self):
         line = '#!/bin/blah ' + ' x' * 90 + '\n'
         self.assertEqual(line,
                          autopep8.shorten_comment(line,
-                                                  newline='\n',
                                                   max_line_length=79))
 
     def test_format_block_comments(self):
@@ -259,7 +216,7 @@ def foo():
 
     def test_format_block_comments_with_multiple_lines(self):
         self.assertEqual(
-            """
+            """\
 # abc
   # blah blah
     # four space indentation
@@ -268,8 +225,8 @@ def foo():
 #do not modify strings
 #do not modify strings'''
 #
-""".lstrip(),
-            autopep8.fix_e269("""
+""",
+            autopep8.fix_e269("""\
 # abc
   #blah blah
     #four space indentation
@@ -278,7 +235,7 @@ def foo():
 #do not modify strings
 #do not modify strings'''
 #
-""".lstrip()))
+"""))
 
     def test_format_block_comments_should_not_corrupt_special_comments(self):
         self.assertEqual(
@@ -308,25 +265,18 @@ def foo():
             '@@',
             autopep8.fix_file(
                 filename=filename,
-                options=autopep8.parse_args(['--diff', filename])[0]))
+                options=autopep8.parse_args(['--diff', filename])))
 
     def test_fix_lines(self):
         self.assertEqual(
             'print(123)\n',
             autopep8.fix_lines(['print( 123 )\n'],
-                               options=autopep8.parse_args([''])[0]))
+                               options=autopep8.parse_args([''])))
 
     def test_fix_code(self):
         self.assertEqual(
             'print(123)\n',
             autopep8.fix_code('print( 123 )\n'))
-
-    def test_fix_string(self):
-        """This is deprecated, but we will test it anyway."""
-        with warnings.catch_warnings(record=True):
-            self.assertEqual(
-                'print(123)\n',
-                autopep8.fix_string('print( 123 )\n'))
 
     def test_fix_code_with_empty_string(self):
         self.assertEqual(
@@ -338,17 +288,38 @@ def foo():
             'print(123)\nx = 4\n',
             autopep8.fix_code('print( 123 )\nx   =4'))
 
+    def test_fix_code_byte_string(self):
+        """This feature is here for friendliness to Python 2."""
+        self.assertEqual(
+            'print(123)\n',
+            autopep8.fix_code(b'print( 123 )\n'))
+
     def test_normalize_line_endings(self):
         self.assertEqual(
             ['abc\n', 'def\n', '123\n', 'hello\n', 'world\n'],
             autopep8.normalize_line_endings(
-                ['abc\n', 'def\n', '123\n', 'hello\r\n', 'world\r']))
+                ['abc\n', 'def\n', '123\n', 'hello\r\n', 'world\r'],
+                '\n'))
 
     def test_normalize_line_endings_with_crlf(self):
         self.assertEqual(
             ['abc\r\n', 'def\r\n', '123\r\n', 'hello\r\n', 'world\r\n'],
             autopep8.normalize_line_endings(
-                ['abc\n', 'def\r\n', '123\r\n', 'hello\r\n', 'world\r']))
+                ['abc\n', 'def\r\n', '123\r\n', 'hello\r\n', 'world\r'],
+                '\r\n'))
+
+    def test_normalize_multiline(self):
+        self.assertEqual('def foo(): pass',
+                         autopep8.normalize_multiline('def foo():'))
+
+        self.assertEqual('def _(): return 1',
+                         autopep8.normalize_multiline('return 1'))
+
+        self.assertEqual('@decorator\ndef _(): pass',
+                         autopep8.normalize_multiline('@decorator\n'))
+
+        self.assertEqual('class A: pass',
+                         autopep8.normalize_multiline('class A:'))
 
     def test_code_match(self):
         self.assertTrue(autopep8.code_match('E2', select=['E2', 'E3'],
@@ -374,25 +345,6 @@ def foo():
     def test_split_at_offsets_with_out_of_order(self):
         self.assertEqual(['12', '3', '4'],
                          autopep8.split_at_offsets('1234', [3, 2]))
-
-    def test_is_probably_inside_string_or_comment(self):
-        self.assertTrue(autopep8.is_probably_inside_string_or_comment(
-            '# abc', 1))
-
-        self.assertFalse(autopep8.is_probably_inside_string_or_comment(
-            'hello # abc', 1))
-
-        self.assertTrue(autopep8.is_probably_inside_string_or_comment(
-            '"abc"', 1))
-
-        self.assertFalse(autopep8.is_probably_inside_string_or_comment(
-            'hello "abc"', 1))
-
-        self.assertTrue(autopep8.is_probably_inside_string_or_comment(
-            '"abc"', 0))
-
-        self.assertFalse(autopep8.is_probably_inside_string_or_comment(
-            ' "abc"', 0))
 
     def test_fix_2to3(self):
         self.assertEqual(
@@ -461,34 +413,31 @@ sys.maxint
     def test_line_shortening_rank(self):
         self.assertGreater(
             autopep8.line_shortening_rank('(1\n+1)\n',
-                                          newline='\n', indent_word='    ',
+                                          indent_word='    ',
                                           max_line_length=79),
             autopep8.line_shortening_rank('(1+\n1)\n',
-                                          newline='\n', indent_word='    ',
+                                          indent_word='    ',
                                           max_line_length=79))
 
         self.assertGreaterEqual(
             autopep8.line_shortening_rank('(1+\n1)\n',
-                                          newline='\n', indent_word='    ',
+                                          indent_word='    ',
                                           max_line_length=79),
             autopep8.line_shortening_rank('(1+1)\n',
-                                          newline='\n', indent_word='    ',
+                                          indent_word='    ',
                                           max_line_length=79))
 
-        self.assertGreater(
-            autopep8.line_shortening_rank('\n',
-                                          newline='\n', indent_word='    ',
-                                          max_line_length=79),
-            autopep8.line_shortening_rank('x\n',
-                                          newline='\n', indent_word='    ',
-                                          max_line_length=79))
+        # Do not crash.
+        autopep8.line_shortening_rank('\n',
+                                      indent_word='    ',
+                                      max_line_length=79)
 
         self.assertGreater(
             autopep8.line_shortening_rank('[foo(\nx) for x in y]\n',
-                                          newline='\n', indent_word='    ',
+                                          indent_word='    ',
                                           max_line_length=79),
             autopep8.line_shortening_rank('[foo(x)\nfor x in y]\n',
-                                          newline='\n', indent_word='    ',
+                                          indent_word='    ',
                                           max_line_length=79))
 
     def test_extract_code_from_function(self):
@@ -513,35 +462,32 @@ sys.maxint
         self.assertEqual(None, autopep8.extract_code_from_function(fix_))
 
     def test_reindenter(self):
-        reindenter = autopep8.Reindenter(['if True:\n', '  pass\n'],
-                                         '\n')
+        reindenter = autopep8.Reindenter('if True:\n  pass\n')
 
-        self.assertEqual(set([1, 2]), reindenter.run())
+        self.assertEqual('if True:\n    pass\n',
+                         reindenter.run())
 
-        self.assertEqual(['if True:\n', '    pass\n'],
-                         reindenter.fixed_lines())
+    def test_reindenter_with_non_standard_indent_size(self):
+        reindenter = autopep8.Reindenter('if True:\n  pass\n')
+
+        self.assertEqual('if True:\n   pass\n',
+                         reindenter.run(3))
 
     def test_reindenter_with_good_input(self):
-        lines = ['if True:\n', '    pass\n']
+        lines = 'if True:\n    pass\n'
 
-        reindenter = autopep8.Reindenter(lines,
-                                         '\n')
-
-        self.assertEqual(set(), reindenter.run())
+        reindenter = autopep8.Reindenter(lines)
 
         self.assertEqual(lines,
-                         reindenter.fixed_lines())
+                         reindenter.run())
 
     def test_reindenter_should_leave_stray_comment_alone(self):
-        lines = ['  #\n', 'if True:\n', '  pass\n']
+        lines = '  #\nif True:\n  pass\n'
 
-        reindenter = autopep8.Reindenter(lines,
-                                         '\n')
+        reindenter = autopep8.Reindenter(lines)
 
-        self.assertEqual(set([1, 2, 3]), reindenter.run())
-
-        self.assertEqual(['  #\n', 'if True:\n', '    pass\n'],
-                         reindenter.fixed_lines())
+        self.assertEqual('  #\nif True:\n    pass\n',
+                         reindenter.run())
 
     def test_fix_e225_avoid_failure(self):
         fix_pep8 = autopep8.FixPEP8(filename='',
@@ -567,16 +513,6 @@ sys.maxint
         fix_pep8 = autopep8.FixPEP8(filename='',
                                     options=autopep8.parse_args(['']),
                                     contents='    1\n')
-
-        self.assertEqual(
-            [],
-            fix_pep8.fix_e401({'line': 1,
-                               'column': 5}))
-
-    def test_fix_e401_avoid_semicolon(self):
-        fix_pep8 = autopep8.FixPEP8(filename='',
-                                    options=autopep8.parse_args(['']),
-                                    contents='import foo; import bar\n')
 
         self.assertEqual(
             [],
@@ -639,15 +575,6 @@ sys.maxint
             [],
             fix_pep8.fix_e712({'line': 1,
                                'column': 3}))
-
-    def test_get_logical_with_empty_string(self):
-        fix_pep8 = autopep8.FixPEP8(filename='',
-                                    options=autopep8.parse_args(['']),
-                                    contents='')
-
-        self.assertEqual(None,
-                         fix_pep8._get_logical({'line': 1,
-                                                'column': 1}))
 
     def test_get_diff_text(self):
         # We ignore the first two lines since it differs on Python 2.6.
@@ -725,118 +652,278 @@ sys.maxint
     def test_priority_key_with_non_existent_key(self):
         pep8_result = {'id': 'foobar'}
         self.assertGreater(autopep8._priority_key(pep8_result), 1)
-        self.assertLessEqual(autopep8._priority_key(pep8_result),
-                             len(set(autopep8.supported_fixes())))
+
+    def test_decode_filename(self):
+        self.assertEqual('foo.py', autopep8.decode_filename(b'foo.py'))
+
+    def test_almost_equal(self):
+        self.assertTrue(autopep8.code_almost_equal(
+            """\
+[1, 2, 3
+    4, 5]
+""",
+            """\
+[1, 2, 3
+4, 5]
+"""))
+
+        self.assertTrue(autopep8.code_almost_equal(
+            """\
+[1,2,3
+    4,5]
+""",
+            """\
+[1, 2, 3
+4,5]
+"""))
+
+        self.assertFalse(autopep8.code_almost_equal(
+            """\
+[1, 2, 3
+    4, 5]
+""",
+            """\
+[1, 2, 3, 4,
+    5]
+"""))
+
+    def test_token_offsets(self):
+        text = """\
+1
+"""
+        string_io = io.StringIO(text)
+        self.assertEqual(
+            [(tokenize.NUMBER, '1', 0, 1),
+             (tokenize.NEWLINE, '\n', 1, 2),
+             (tokenize.ENDMARKER, '', 2, 2)],
+            list(autopep8.token_offsets(
+                tokenize.generate_tokens(string_io.readline))))
+
+    def test_token_offsets_with_multiline(self):
+        text = """\
+x = '''
+1
+2
+'''
+"""
+        string_io = io.StringIO(text)
+        self.assertEqual(
+            [(tokenize.NAME, 'x', 0, 1),
+             (tokenize.OP, '=', 2, 3),
+             (tokenize.STRING, "'''\n1\n2\n'''", 4, 15),
+             (tokenize.NEWLINE, '\n', 15, 16),
+             (tokenize.ENDMARKER, '', 16, 16)],
+            list(autopep8.token_offsets(
+                tokenize.generate_tokens(string_io.readline))))
+
+    def test_token_offsets_with_escaped_newline(self):
+        text = """\
+True or \\
+    False
+"""
+        string_io = io.StringIO(text)
+        self.assertEqual(
+            [(tokenize.NAME, 'True', 0, 4),
+             (tokenize.NAME, 'or', 5, 7),
+             (tokenize.NAME, 'False', 11, 16),
+             (tokenize.NEWLINE, '\n', 16, 17),
+             (tokenize.ENDMARKER, '', 17, 17)],
+            list(autopep8.token_offsets(
+                tokenize.generate_tokens(string_io.readline))))
+
+    def test_shorten_line_candidates_are_valid(self):
+        for text in [
+            """\
+[xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx, y] = [1, 2]
+""",
+            """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx, y = [1, 2]
+""",
+            """\
+lambda xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: line_shortening_rank(x,
+                                           indent_word,
+                                           max_line_length)
+""",
+        ]:
+            indent = autopep8._get_indentation(text)
+            source = text[len(indent):]
+            assert source.lstrip() == source
+            tokens = list(autopep8.generate_tokens(source))
+
+            for candidate in autopep8.shorten_line(
+                    tokens, source, indent,
+                    indent_word='    ',
+                    max_line_length=79,
+                    aggressive=10,
+                    experimental=True,
+                    previous_line=''):
+
+                self.assertEqual(
+                    re.sub(r'\s', '', text),
+                    re.sub(r'\s', '', candidate))
 
 
 class SystemTests(unittest.TestCase):
 
+    maxDiff = None
+
     def test_e101(self):
-        line = """
+        line = """\
 while True:
     if True:
     \t1
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 while True:
     if True:
         1
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
+    def test_e101_with_indent_size_0(self):
+        line = """\
+while True:
+    if True:
+    \t1
+"""
+        with autopep8_context(line, options=['--indent-size=0']) as result:
+            self.assertEqual(line, result)
+
+    def test_e101_with_indent_size_1(self):
+        line = """\
+while True:
+    if True:
+    \t1
+"""
+        fixed = """\
+while True:
+ if True:
+  1
+"""
+        with autopep8_context(line, options=['--indent-size=1']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e101_with_indent_size_2(self):
+        line = """\
+while True:
+    if True:
+    \t1
+"""
+        fixed = """\
+while True:
+  if True:
+    1
+"""
+        with autopep8_context(line, options=['--indent-size=2']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e101_with_indent_size_3(self):
+        line = """\
+while True:
+    if True:
+    \t1
+"""
+        fixed = """\
+while True:
+   if True:
+      1
+"""
+        with autopep8_context(line, options=['--indent-size=3']) as result:
+            self.assertEqual(fixed, result)
+
     def test_e101_should_not_expand_non_indentation_tabs(self):
-        line = """
+        line = """\
 while True:
     if True:
     \t1 == '\t'
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 while True:
     if True:
         1 == '\t'
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e101_should_ignore_multiline_strings(self):
-        line = """
+        line = """\
 x = '''
 while True:
     if True:
     \t1
 '''
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 x = '''
 while True:
     if True:
     \t1
 '''
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e101_should_fix_docstrings(self):
-        line = """
+        line = """\
 class Bar(object):
 
     def foo():
         '''
 \tdocstring
         '''
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 class Bar(object):
 
     def foo():
         '''
         docstring
         '''
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e101_when_pep8_mistakes_first_tab_in_string(self):
         # pep8 will complain about this even if the tab indentation found
         # elsewhere is in a multiline string.
-        line = """
+        line = """\
 x = '''
 \tHello.
 '''
 if True:
     123
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 x = '''
 \tHello.
 '''
 if True:
     123
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e101_should_ignore_multiline_strings_complex(self):
-        line = """
+        line = """\
 print(3 <> 4, '''
 while True:
     if True:
     \t1
 \t''', 4 <> 5)
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 print(3 != 4, '''
 while True:
     if True:
     \t1
 \t''', 4 != 5)
-""".lstrip()
+"""
         with autopep8_context(line, options=['--aggressive']) as result:
             self.assertEqual(fixed, result)
 
     def test_e101_with_comments(self):
-        line = """
+        line = """\
 while True:  # My inline comment
              # with a hanging
              # comment.
@@ -845,8 +932,8 @@ while True:  # My inline comment
     \t# My comment
     \t1
     \t# My other comment
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 while True:  # My inline comment
              # with a hanging
              # comment.
@@ -855,17 +942,17 @@ while True:  # My inline comment
         # My comment
         1
         # My other comment
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e101_skip_if_bad_indentation(self):
-        line = """
+        line = """\
 try:
 \t    pass
     except:
         pass
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(line, result)
 
@@ -893,25 +980,25 @@ try:
             self.assertEqual(fixed, result)
 
     def test_e111_longer(self):
-        line = """
+        line = """\
 while True:
       if True:
             1
       elif True:
             2
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 while True:
     if True:
         1
     elif True:
         2
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e111_multiple_levels(self):
-        line = """
+        line = """\
 while True:
     if True:
        1
@@ -919,36 +1006,36 @@ while True:
 # My comment
 print('abc')
 
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 while True:
     if True:
         1
 
 # My comment
 print('abc')
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e111_with_dedent(self):
-        line = """
+        line = """\
 def foo():
     if True:
          2
     1
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 def foo():
     if True:
         2
     1
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e111_with_other_errors(self):
-        line = """
+        line = """\
 def foo():
     if True:
          (2 , 1)
@@ -956,8 +1043,8 @@ def foo():
     if True:
            print('hello')\t
     2
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 def foo():
     if True:
         (2, 1)
@@ -965,29 +1052,28 @@ def foo():
     if True:
         print('hello')
     2
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e111_should_not_modify_string_contents(self):
-        line = """
+        line = """\
 if True:
  x = '''
  1
  '''
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 if True:
     x = '''
  1
  '''
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e12_reindent(self):
-        line = """
-
+        line = """\
 def foo_bar(baz, frop,
     fizz, bang):  # E128
     pass
@@ -1019,8 +1105,7 @@ print "E127", ("over-",
 print "E128", ("under-",
               "under-indent")
 """
-        fixed = """
-
+        fixed = """\
 def foo_bar(baz, frop,
             fizz, bang):  # E128
     pass
@@ -1056,13 +1141,13 @@ print "E128", ("under-",
             self.assertEqual(fixed, result)
 
     def test_e12_reindent_with_multiple_fixes(self):
-        line = """
+        line = """\
 
 sql = 'update %s set %s %s' % (from_table,
                                ','.join(['%s=%s' % (col, col) for col in cols]),
         where_clause)
 """
-        fixed = """
+        fixed = """\
 
 sql = 'update %s set %s %s' % (from_table,
                                ','.join(['%s=%s' % (col, col)
@@ -1073,7 +1158,7 @@ sql = 'update %s set %s %s' % (from_table,
             self.assertEqual(fixed, result)
 
     def test_e12_tricky(self):
-        line = """
+        line = """\
 #: E126
 if (
     x == (
@@ -1085,7 +1170,7 @@ if (
         y == 4):
     pass
 """
-        fixed = """
+        fixed = """\
 #: E126
 if (
     x == (
@@ -1101,7 +1186,7 @@ if (
             self.assertEqual(fixed, result)
 
     def test_e12_large(self):
-        line = """
+        line = """\
 class BogusController(controller.CementBaseController):
 
     class Meta:
@@ -1153,7 +1238,7 @@ class TestDuplicateController(controller.CementBaseController):
     def my_command(self):
         pass
 """
-        fixed = """
+        fixed = """\
 class BogusController(controller.CementBaseController):
 
     class Meta:
@@ -1302,12 +1387,12 @@ foooo('',
             self.assertEqual(fixed, result)
 
     def test_e123(self):
-        line = """
+        line = """\
 if True:
     foo = (
         )
 """
-        fixed = """
+        fixed = """\
 if True:
     foo = (
     )
@@ -1330,7 +1415,7 @@ x = \
             self.assertEqual(fixed, result)
 
     def test_e125(self):
-        line = """
+        line = """\
 if (a and
     b in [
         'foo',
@@ -1338,7 +1423,7 @@ if (a and
     c):
     pass
 """
-        fixed = """
+        fixed = """\
 if (a and
         b in [
             'foo',
@@ -1350,7 +1435,7 @@ if (a and
             self.assertEqual(fixed, result)
 
     def test_e125_with_multiline_string(self):
-        line = """
+        line = """\
 for foo in '''
     abc
     123
@@ -1361,12 +1446,12 @@ for foo in '''
             self.assertEqual(line, result)
 
     def test_e125_with_multiline_string_okay(self):
-        line = """
+        line = """\
 def bar(
     a='''a'''):
     print(foo)
 """
-        fixed = """
+        fixed = """\
 def bar(
         a='''a'''):
     print(foo)
@@ -1375,14 +1460,14 @@ def bar(
             self.assertEqual(fixed, result)
 
     def test_e126(self):
-        line = """
+        line = """\
 if True:
     posted = models.DateField(
             default=datetime.date.today,
             help_text="help"
     )
 """
-        fixed = """
+        fixed = """\
 if True:
     posted = models.DateField(
         default=datetime.date.today,
@@ -1409,13 +1494,13 @@ self.assertEqual('bottom 1',
             self.assertEqual(fixed, result)
 
     def test_e127(self):
-        line = """
+        line = """\
 if True:
     if True:
         chksum = (sum([int(value[i]) for i in xrange(0, 9, 2)]) * 7 -
                           sum([int(value[i]) for i in xrange(1, 9, 2)])) % 10
 """
-        fixed = """
+        fixed = """\
 if True:
     if True:
         chksum = (sum([int(value[i]) for i in xrange(0, 9, 2)]) * 7 -
@@ -1425,20 +1510,30 @@ if True:
             self.assertEqual(fixed, result)
 
     def test_e127_align_visual_indent(self):
-        line = """
+        line = """\
 def draw(self):
     color = [([0.2, 0.1, 0.3], [0.2, 0.1, 0.3], [0.2, 0.1, 0.3]),
                ([0.9, 0.3, 0.5], [0.5, 1.0, 0.5], [0.3, 0.3, 0.9])  ][self._p._colored ]
     self.draw_background(color)
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 def draw(self):
     color = [([0.2, 0.1, 0.3], [0.2, 0.1, 0.3], [0.2, 0.1, 0.3]),
              ([0.9, 0.3, 0.5], [0.5, 1.0, 0.5], [0.3, 0.3, 0.9])][self._p._colored]
     self.draw_background(color)
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
+
+    def test_e127_align_visual_indent_okay(self):
+        """This is for code coverage."""
+        line = """\
+want = (have + _leading_space_count(
+        after[jline - 1]) -
+        _leading_space_count(lines[jline]))
+"""
+        with autopep8_context(line) as result:
+            self.assertEqual(line, result)
 
     def test_e127_with_backslash(self):
         line = r"""
@@ -1447,14 +1542,14 @@ if True:
         self.date = meta.session.query(schedule.Appointment)\
             .filter(schedule.Appointment.id ==
                                       appointment_id).one().agenda.endtime
-""".lstrip()
+"""
         fixed = r"""
 if True:
     if True:
         self.date = meta.session.query(schedule.Appointment)\
             .filter(schedule.Appointment.id ==
                     appointment_id).one().agenda.endtime
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
@@ -1463,12 +1558,12 @@ if True:
 if True:
     foo = [food(1)
                for bar in bars]
-""".lstrip()
+"""
         fixed = r"""
 if True:
     foo = [food(1)
            for bar in bars]
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
@@ -1487,16 +1582,16 @@ if True:
             self.assertEqual(fixed, result)
 
     def test_w191(self):
-        line = """
+        line = """\
 while True:
 \tif True:
 \t\t1
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 while True:
     if True:
         1
-""".lstrip()
+"""
         with autopep8_context(line, options=['--aggressive']) as result:
             self.assertEqual(fixed, result)
 
@@ -1514,7 +1609,7 @@ while True:
 
     def test_e202_skip_multiline(self):
         """We skip this since pep8 reports the error as being on line 1."""
-        line = """
+        line = """\
 
 ('''
 a
@@ -1572,9 +1667,9 @@ c
             self.assertEqual(fixed, result)
 
     def test_e221_should_skip_multiline(self):
-        line = '''
-    def javascript(self):
-        return u"""
+        line = '''\
+def javascript(self):
+    return u"""
 <script type="text/javascript" src="++resource++ptg.shufflegallery/jquery.promptu-menu.js"></script>
 <script type="text/javascript">
 $(function(){
@@ -1587,9 +1682,9 @@ $(function(){
     });
 });
 </script>
-        """  % {
-        }
-'''.lstrip()
+    """  % {
+    }
+'''
         with autopep8_context(line) as result:
             self.assertEqual(line, result)
 
@@ -1612,19 +1707,19 @@ $(function(){
             self.assertEqual(fixed, result)
 
     def test_e223_with_tab_indentation(self):
-        line = """
+        line = """\
 class Foo():
 
 \tdef __init__(self):
 \t\tx= 1\t+ 3
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 class Foo():
 
 \tdef __init__(self):
 \t\tx = 1 + 3
-""".lstrip()
-        with autopep8_context(line, options=['--ignore=W191']) as result:
+"""
+        with autopep8_context(line, options=['--ignore=E1,W191']) as result:
             self.assertEqual(fixed, result)
 
     def test_e224(self):
@@ -1640,19 +1735,19 @@ class Foo():
             self.assertEqual(fixed, result)
 
     def test_e224_with_tab_indentation(self):
-        line = """
+        line = """\
 class Foo():
 
 \tdef __init__(self):
 \t\tx= \t3
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 class Foo():
 
 \tdef __init__(self):
 \t\tx = 3
-""".lstrip()
-        with autopep8_context(line, options=['--ignore=W191']) as result:
+"""
+        with autopep8_context(line, options=['--ignore=E1,W191']) as result:
             self.assertEqual(fixed, result)
 
     def test_e225(self):
@@ -1662,18 +1757,18 @@ class Foo():
             self.assertEqual(fixed, result)
 
     def test_e225_with_indentation_fix(self):
-        line = """
+        line = """\
 class Foo(object):
 
   def bar(self):
     return self.elephant is not None
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 class Foo(object):
 
     def bar(self):
         return self.elephant is not None
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
@@ -1703,7 +1798,6 @@ class Foo(object):
 
     def test_e231_with_many_commas(self):
         fixed = str(list(range(200))) + '\n'
-        import re
         line = re.sub(', ', ',', fixed)
         with autopep8_context(line, options=['--select=E231']) as result:
             self.assertEqual(fixed, result)
@@ -1979,11 +2073,11 @@ def foo():
             self.assertEqual(fixed, result)
 
     def test_e501_basic(self):
-        line = """
+        line = """\
 
 print(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333, 333, 333)
 """
-        fixed = """
+        fixed = """\
 
 print(111, 111, 111, 111, 222, 222, 222, 222,
       222, 222, 222, 222, 222, 333, 333, 333, 333)
@@ -1991,20 +2085,15 @@ print(111, 111, 111, 111, 222, 222, 222, 222,
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
-    def test_e501_with_return(self):
+    def test_e501_with_commas_and_colons(self):
         line = """\
-def foo():
-    return bar('                                  ', '                 ', 1234353423243)
+foobar = {'aaaaaaaaaaaa': 'bbbbbbbbbbbbbbbb', 'dddddd': 'eeeeeeeeeeeeeeee', 'ffffffffffff': 'gggggggg'}
 """
         fixed = """\
-def foo():
-    return (
-        bar('                                  ',
-            '                 ', 1234353423243)
-    )
+foobar = {'aaaaaaaaaaaa': 'bbbbbbbbbbbbbbbb',
+          'dddddd': 'eeeeeeeeeeeeeeee', 'ffffffffffff': 'gggggggg'}
 """
-        with autopep8_context(line, options=['--aggressive',
-                                             '--select=E501']) as result:
+        with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e501_with_inline_comments(self):
@@ -2023,14 +2112,47 @@ if True:
         with autopep8_context(line, options=['--aggressive']) as result:
             self.assertEqual(fixed, result)
 
+    def test_e501_with_inline_comments_should_skip_multiline(self):
+        line = """\
+'''This should be left alone. -----------------------------------------------------
+
+'''  # foo
+
+'''This should be left alone. -----------------------------------------------------
+
+''' \\
+# foo
+
+'''This should be left alone. -----------------------------------------------------
+
+''' \\
+\\
+# foo
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(line, result)
+
     def test_e501_with_inline_comments_should_skip_keywords(self):
         line = """\
 '                                                          '  # noqa Long inline comments should be moved above.
 if True:
     '                                                          '  # pylint: disable-msgs=E0001
     '                                                          '  # pragma: no cover
+    '                                                          '  # pragma: no cover
 """
         with autopep8_context(line, options=['--aggressive']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_with_inline_comments_should_skip_keywords_without_aggressive(
+            self):
+        line = """\
+'                                                          '  # noqa Long inline comments should be moved above.
+if True:
+    '                                                          '  # pylint: disable-msgs=E0001
+    '                                                          '  # pragma: no cover
+    '                                                          '  # pragma: no cover
+"""
+        with autopep8_context(line) as result:
             self.assertEqual(line, result)
 
     def test_e501_with_inline_comments_should_skip_edge_cases(self):
@@ -2060,21 +2182,22 @@ if True:
 x = [3244234243234, 234234234324, 234234324, 23424234, 234234234, 234234, 234243, 234243, 234234234324, 234234324, 23424234, 234234234, 234234, 234243, 234243]
 """
         fixed = """\
-x = [3244234243234,
-     234234234324,
-     234234324,
-     23424234,
-     234234234,
-     234234,
-     234243,
-     234243,
-     234234234324,
-     234234324,
-     23424234,
-     234234234,
-     234234,
-     234243,
-     234243]
+x = [
+    3244234243234,
+    234234234324,
+    234234324,
+    23424234,
+    234234234,
+    234234,
+    234243,
+    234243,
+    234234234324,
+    234234324,
+    23424234,
+    234234234,
+    234234,
+    234243,
+    234243]
 """
         with autopep8_context(line, options=['--aggressive']) as result:
             self.assertEqual(fixed, result)
@@ -2104,12 +2227,12 @@ parser.add_argument(
             self.assertEqual(fixed, result)
 
     def test_e501_with_indent(self):
-        line = """
+        line = """\
 
 def d():
     print(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333, 333, 333)
 """
-        fixed = """
+        fixed = """\
 
 def d():
     print(111, 111, 111, 111, 222, 222, 222, 222,
@@ -2119,12 +2242,12 @@ def d():
             self.assertEqual(fixed, result)
 
     def test_e501_alone_with_indentation(self):
-        line = """
+        line = """\
 
 if True:
     print(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333, 333, 333)
 """
-        fixed = """
+        fixed = """\
 
 if True:
     print(111, 111, 111, 111, 222, 222, 222, 222,
@@ -2134,13 +2257,13 @@ if True:
             self.assertEqual(fixed, result)
 
     def test_e501_alone_with_tuple(self):
-        line = """
+        line = """\
 
 fooooooooooooooooooooooooooooooo000000000000000000000000 = [1,
                                                             ('TransferTime', 'FLOAT')
                                                            ]
 """
-        fixed = """
+        fixed = """\
 
 fooooooooooooooooooooooooooooooo000000000000000000000000 = [1,
                                                             ('TransferTime',
@@ -2149,13 +2272,6 @@ fooooooooooooooooooooooooooooooo000000000000000000000000 = [1,
 """
         with autopep8_context(line, options=['--select=E501']) as result:
             self.assertEqual(fixed, result)
-
-    def test_e501_should_avoid_making_things_ugly(self):
-        line = """\
-x = ('                                                                                             ')
-"""
-        with autopep8_context(line, options=['--select=E501']) as result:
-            self.assertEqual(line, result)
 
     def test_e501_should_not_try_to_break_at_every_paren_in_arithmetic(self):
         line = """\
@@ -2173,14 +2289,11 @@ this_should_be_shortened = (
             self.assertEqual(fixed, result)
 
     def test_e501_arithmetic_operator_with_indent(self):
-        line = """
-
+        line = """\
 def d():
     111 + 111 + 111 + 111 + 111 + 222 + 222 + 222 + 222 + 222 + 222 + 222 + 222 + 222 + 333 + 333 + 333 + 333
 """
-        fixed = r"""
-
-def d():
+        fixed = r"""def d():
     111 + 111 + 111 + 111 + 111 + 222 + 222 + 222 + 222 + \
         222 + 222 + 222 + 222 + 222 + 333 + 333 + 333 + 333
 """
@@ -2188,11 +2301,11 @@ def d():
             self.assertEqual(fixed, result)
 
     def test_e501_more_complicated(self):
-        line = """
+        line = """\
 
 blahblah = os.environ.get('blahblah') or os.environ.get('blahblahblah') or os.environ.get('blahblahblahblah')
 """
-        fixed = """
+        fixed = """\
 
 blahblah = os.environ.get('blahblah') or os.environ.get(
     'blahblahblah') or os.environ.get('blahblahblahblah')
@@ -2201,7 +2314,7 @@ blahblah = os.environ.get('blahblah') or os.environ.get(
             self.assertEqual(fixed, result)
 
     def test_e501_skip_even_more_complicated(self):
-        line = """
+        line = """\
 
 if True:
     if True:
@@ -2215,14 +2328,14 @@ if True:
 
     def test_e501_prefer_to_break_at_begnning(self):
         """We prefer not to leave part of the arguments hanging."""
-        line = """
+        line = """\
 
 looooooooooooooong = foo(one, two, three, four, five, six, seven, eight, nine, ten)
 """
-        fixed = """
+        fixed = """\
 
-looooooooooooooong = foo(one, two, three, four, five,
-                         six, seven, eight, nine, ten)
+looooooooooooooong = foo(
+    one, two, three, four, five, six, seven, eight, nine, ten)
 """
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
@@ -2238,23 +2351,101 @@ someverylongindenttionwhatnot().foo().bar().baz(
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
+    def test_e501_with_logical_fix(self):
+        line = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(aaaaaaaaaaaaaaaaaaaaaaa,
+                             bbbbbbbbbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        fixed = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    aaaaaaaaaaaaaaaaaaaaaaa,
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    cccccccccccccccccccccccccccc,
+    dddddddddddddddddddddddd)
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_logical_fix_and_physical_fix(self):
+        line = """\
+# -------------------------------------------------------------------------------
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(aaaaaaaaaaaaaaaaaaaaaaa,
+                             bbbbbbbbbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        fixed = """\
+# ------------------------------------------------------------------------
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    aaaaaaaaaaaaaaaaaaaaaaa,
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    cccccccccccccccccccccccccccc,
+    dddddddddddddddddddddddd)
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_logical_fix_and_adjacent_strings(self):
+        line = """\
+print('a-----------------------' 'b-----------------------' 'c-----------------------'
+      'd-----------------------''e'"f"r"g")
+"""
+        fixed = """\
+print(
+    'a-----------------------'
+    'b-----------------------'
+    'c-----------------------'
+    'd-----------------------'
+    'e'
+    "f"
+    r"g")
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
     def test_e501_with_multiple_lines(self):
-        line = """
+        line = """\
 
 foo_bar_zap_bing_bang_boom(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333,
                            111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333)
 """
-        fixed = """
+        fixed = """\
 
 foo_bar_zap_bing_bang_boom(
-    111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333,
-    111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333)
+    111,
+    111,
+    111,
+    111,
+    222,
+    222,
+    222,
+    222,
+    222,
+    222,
+    222,
+    222,
+    222,
+    333,
+    333,
+    111,
+    111,
+    111,
+    111,
+    222,
+    222,
+    222,
+    222,
+    222,
+    222,
+    222,
+    222,
+    222,
+    333,
+    333)
 """
-        with autopep8_context(line) as result:
+        with autopep8_context(line, options=['-aa']) as result:
             self.assertEqual(fixed, result)
 
     def test_e501_with_multiple_lines_and_quotes(self):
-        line = """
+        line = """\
 
 if True:
     xxxxxxxxxxx = xxxxxxxxxxxxxxxxx(xxxxxxxxxxx, xxxxxxxxxxxxxxxx={'xxxxxxxxxxxx': 'xxxxx',
@@ -2262,27 +2453,29 @@ if True:
                                                                    'xxxxxxxx': False,
                                                                    })
 """
-        fixed = """
+        fixed = """\
 
 if True:
     xxxxxxxxxxx = xxxxxxxxxxxxxxxxx(
-        xxxxxxxxxxx, xxxxxxxxxxxxxxxx={'xxxxxxxxxxxx': 'xxxxx',
-                                       'xxxxxxxxxxx': xx,
-                                       'xxxxxxxx': False,
-                                       })
+        xxxxxxxxxxx,
+        xxxxxxxxxxxxxxxx={
+            'xxxxxxxxxxxx': 'xxxxx',
+            'xxxxxxxxxxx': xx,
+            'xxxxxxxx': False,
+        })
 """
-        with autopep8_context(line) as result:
+        with autopep8_context(line, options=['-aa']) as result:
             self.assertEqual(fixed, result)
 
     def test_e501_do_not_break_on_keyword(self):
         # We don't want to put a newline after equals for keywords as this
         # violates PEP 8.
-        line = """
+        line = """\
 
 if True:
     long_variable_name = tempfile.mkstemp(prefix='abcdefghijklmnopqrstuvwxyz0123456789')
 """
-        fixed = """
+        fixed = """\
 
 if True:
     long_variable_name = tempfile.mkstemp(
@@ -2295,7 +2488,7 @@ if True:
         # This fix is incomplete. (The line is still too long.) But it is here
         # just to confirm that we do not put a comma at the beginning of a
         # line.
-        line = """
+        line = """\
 
 def dummy():
     if True:
@@ -2303,32 +2496,31 @@ def dummy():
             if True:
                 object = ModifyAction( [MODIFY70.text, OBJECTBINDING71.text, COLON72.text], MODIFY70.getLine(), MODIFY70.getCharPositionInLine() )
 """
-        fixed = """
+        fixed = """\
 
 def dummy():
     if True:
         if True:
             if True:
-                object = ModifyAction(
-                    [MODIFY70.text, OBJECTBINDING71.text, COLON72.text],
-                    MODIFY70.getLine(), MODIFY70.getCharPositionInLine())
+                object = ModifyAction([MODIFY70.text, OBJECTBINDING71.text, COLON72.text], MODIFY70.getLine(
+                ), MODIFY70.getCharPositionInLine())
 """
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_e501_should_not_break_on_dot(self):
-        line = """
+        line = """\
 if True:
     if True:
         raise xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx('xxxxxxxxxxxxxxxxx "{d}" xxxxxxxxxxxxxx'.format(d='xxxxxxxxxxxxxxx'))
-""".lstrip()
+"""
 
-        fixed = """
+        fixed = """\
 if True:
     if True:
         raise xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(
             'xxxxxxxxxxxxxxxxx "{d}" xxxxxxxxxxxxxx'.format(d='xxxxxxxxxxxxxxx'))
-""".lstrip()
+"""
 
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
@@ -2355,12 +2547,12 @@ if True:
             self.assertEqual(fixed, result)
 
     def test_e501_with_comment_should_not_modify_docstring(self):
-        line = '''
+        line = '''\
 def foo():
     """
                         # This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
     """
-'''.lstrip()
+'''
         with autopep8_context(line) as result:
             self.assertEqual(line, result)
 
@@ -2414,7 +2606,7 @@ class Useless(object):
             return True
 
         return False
-""".lstrip()
+"""
 
         with autopep8_context(line) as result:
             self.assertEqual(line, result)
@@ -2435,18 +2627,352 @@ models = {
         fixed = """\
 models = {
     'auth.group': {
-        'Meta': {'object_name': 'Group'},
-        'permissions': ('django.db.models.fields.related.ManyToManyField',
-                        [], {'to': "orm['auth.Permission']", 'symmetrical': 'False', 'blank': 'True'})
-    },
+        'Meta': {
+            'object_name': 'Group'},
+        'permissions': (
+            'django.db.models.fields.related.ManyToManyField',
+            [],
+            {
+                'to': "orm['auth.Permission']",
+                'symmetrical': 'False',
+                'blank': 'True'})},
     'auth.permission': {
-        'Meta': {'ordering': "('content_type__app_label', 'content_type__model', 'codename')",
-                 'unique_together': "(('content_type', 'codename'),)", 'object_name': 'Permission'},
-        'name': ('django.db.models.fields.CharField', [], {'max_length': '50'})
-    },
+        'Meta': {
+            'ordering': "('content_type__app_label', 'content_type__model', 'codename')",
+            'unique_together': "(('content_type', 'codename'),)",
+            'object_name': 'Permission'},
+        'name': (
+            'django.db.models.fields.CharField',
+            [],
+            {
+                'max_length': '50'})},
 }
 """
-        with autopep8_context(line, options=['--aggressive']) as result:
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_multiple_logical_lines(self):
+        line = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(aaaaaaaaaaaaaaaaaaaaaaa,
+                             bbbbbbbbbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(aaaaaaaaaaaaaaaaaaaaaaa,
+                             bbbbbbbbbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        fixed = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    aaaaaaaaaaaaaaaaaaaaaaa,
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    cccccccccccccccccccccccccccc,
+    dddddddddddddddddddddddd)
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    aaaaaaaaaaaaaaaaaaaaaaa,
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    cccccccccccccccccccccccccccc,
+    dddddddddddddddddddddddd)
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_multiple_logical_lines_with_math(self):
+        line = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx([-1 + 5 / 10,
+                                                                            100,
+                                                                            -3 - 4])
+"""
+        fixed = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    [-1 + 5 / 10, 100, -3 - 4])
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_import(self):
+        line = """\
+from . import (xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,
+               yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy)
+"""
+        fixed = """\
+from . import (
+    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,
+    yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy)
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_massive_number_of_logical_lines(self):
+        """We do not care about results here.
+
+        We just want to know that it doesn't take a ridiculous amount of time.
+        Caching is currently required to avoid repeately trying the same line.
+
+        """
+        line = """\
+# encoding: utf-8
+import datetime
+from south.db import db
+from south.v2 import SchemaMigration
+from django.db import models
+
+from provider.compat import user_model_label
+
+
+class Migration(SchemaMigration):
+
+    def forwards(self, orm):
+
+        # Adding model 'Client'
+        db.create_table('oauth2_client', (
+            ('id', self.gf('django.db.models.fields.AutoField')(primary_key=True)),
+            ('user', self.gf('django.db.models.fields.related.ForeignKey')(to=orm[user_model_label])),
+            ('url', self.gf('django.db.models.fields.URLField')(max_length=200)),
+            ('redirect_uri', self.gf('django.db.models.fields.URLField')(max_length=200)),
+            ('client_id', self.gf('django.db.models.fields.CharField')(default='37b581bdc702c732aa65', max_length=255)),
+            ('client_secret', self.gf('django.db.models.fields.CharField')(default='5cf90561f7566aa81457f8a32187dcb8147c7b73', max_length=255)),
+            ('client_type', self.gf('django.db.models.fields.IntegerField')()),
+        ))
+        db.send_create_signal('oauth2', ['Client'])
+
+        # Adding model 'Grant'
+        db.create_table('oauth2_grant', (
+            ('id', self.gf('django.db.models.fields.AutoField')(primary_key=True)),
+            ('user', self.gf('django.db.models.fields.related.ForeignKey')(to=orm[user_model_label])),
+            ('client', self.gf('django.db.models.fields.related.ForeignKey')(to=orm['oauth2.Client'])),
+            ('code', self.gf('django.db.models.fields.CharField')(default='f0cda1a5f4ae915431ff93f477c012b38e2429c4', max_length=255)),
+            ('expires', self.gf('django.db.models.fields.DateTimeField')(default=datetime.datetime(2012, 2, 8, 10, 43, 45, 620301))),
+            ('redirect_uri', self.gf('django.db.models.fields.CharField')(max_length=255, blank=True)),
+            ('scope', self.gf('django.db.models.fields.IntegerField')(default=0)),
+        ))
+        db.send_create_signal('oauth2', ['Grant'])
+
+        # Adding model 'AccessToken'
+        db.create_table('oauth2_accesstoken', (
+            ('id', self.gf('django.db.models.fields.AutoField')(primary_key=True)),
+            ('user', self.gf('django.db.models.fields.related.ForeignKey')(to=orm[user_model_label])),
+            ('token', self.gf('django.db.models.fields.CharField')(default='b10b8f721e95117cb13c', max_length=255)),
+            ('client', self.gf('django.db.models.fields.related.ForeignKey')(to=orm['oauth2.Client'])),
+            ('expires', self.gf('django.db.models.fields.DateTimeField')(default=datetime.datetime(2013, 2, 7, 10, 33, 45, 618854))),
+            ('scope', self.gf('django.db.models.fields.IntegerField')(default=0)),
+        ))
+        db.send_create_signal('oauth2', ['AccessToken'])
+
+        # Adding model 'RefreshToken'
+        db.create_table('oauth2_refreshtoken', (
+            ('id', self.gf('django.db.models.fields.AutoField')(primary_key=True)),
+            ('user', self.gf('django.db.models.fields.related.ForeignKey')(to=orm[user_model_label])),
+            ('token', self.gf('django.db.models.fields.CharField')(default='84035a870dab7c820c2c501fb0b10f86fdf7a3fe', max_length=255)),
+            ('access_token', self.gf('django.db.models.fields.related.OneToOneField')(related_name='refresh_token', unique=True, to=orm['oauth2.AccessToken'])),
+            ('client', self.gf('django.db.models.fields.related.ForeignKey')(to=orm['oauth2.Client'])),
+            ('expired', self.gf('django.db.models.fields.BooleanField')(default=False)),
+        ))
+        db.send_create_signal('oauth2', ['RefreshToken'])
+
+
+    def backwards(self, orm):
+
+        # Deleting model 'Client'
+        db.delete_table('oauth2_client')
+
+        # Deleting model 'Grant'
+        db.delete_table('oauth2_grant')
+
+        # Deleting model 'AccessToken'
+        db.delete_table('oauth2_accesstoken')
+
+        # Deleting model 'RefreshToken'
+        db.delete_table('oauth2_refreshtoken')
+
+
+    models = {
+        'auth.group': {
+            'Meta': {'object_name': 'Group'},
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'name': ('django.db.models.fields.CharField', [], {'unique': 'True', 'max_length': '80'}),
+            'permissions': ('django.db.models.fields.related.ManyToManyField', [], {'to': "orm['auth.Permission']", 'symmetrical': 'False', 'blank': 'True'})
+        },
+        'auth.permission': {
+            'Meta': {'ordering': "('content_type__app_label', 'content_type__model', 'codename')", 'unique_together': "(('content_type', 'codename'),)", 'object_name': 'Permission'},
+            'codename': ('django.db.models.fields.CharField', [], {'max_length': '100'}),
+            'content_type': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['contenttypes.ContentType']"}),
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'name': ('django.db.models.fields.CharField', [], {'max_length': '50'})
+        },
+        user_model_label: {
+            'Meta': {'object_name': user_model_label.split('.')[-1]},
+            'date_joined': ('django.db.models.fields.DateTimeField', [], {'default': 'datetime.datetime.now'}),
+            'email': ('django.db.models.fields.EmailField', [], {'max_length': '75', 'blank': 'True'}),
+            'first_name': ('django.db.models.fields.CharField', [], {'max_length': '30', 'blank': 'True'}),
+            'groups': ('django.db.models.fields.related.ManyToManyField', [], {'to': "orm['auth.Group']", 'symmetrical': 'False', 'blank': 'True'}),
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'is_active': ('django.db.models.fields.BooleanField', [], {'default': 'True'}),
+            'is_staff': ('django.db.models.fields.BooleanField', [], {'default': 'False'}),
+            'is_superuser': ('django.db.models.fields.BooleanField', [], {'default': 'False'}),
+            'last_login': ('django.db.models.fields.DateTimeField', [], {'default': 'datetime.datetime.now'}),
+            'last_name': ('django.db.models.fields.CharField', [], {'max_length': '30', 'blank': 'True'}),
+            'password': ('django.db.models.fields.CharField', [], {'max_length': '128'}),
+            'user_permissions': ('django.db.models.fields.related.ManyToManyField', [], {'to': "orm['auth.Permission']", 'symmetrical': 'False', 'blank': 'True'}),
+            'username': ('django.db.models.fields.CharField', [], {'unique': 'True', 'max_length': '30'})
+        },
+        'contenttypes.contenttype': {
+            'Meta': {'ordering': "('name',)", 'unique_together': "(('app_label', 'model'),)", 'object_name': 'ContentType', 'db_table': "'django_content_type'"},
+            'app_label': ('django.db.models.fields.CharField', [], {'max_length': '100'}),
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'model': ('django.db.models.fields.CharField', [], {'max_length': '100'}),
+            'name': ('django.db.models.fields.CharField', [], {'max_length': '100'})
+        },
+        'oauth2.accesstoken': {
+            'Meta': {'object_name': 'AccessToken'},
+            'client': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['oauth2.Client']"}),
+            'expires': ('django.db.models.fields.DateTimeField', [], {'default': 'datetime.datetime(2013, 2, 7, 10, 33, 45, 624553)'}),
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'scope': ('django.db.models.fields.IntegerField', [], {'default': '0'}),
+            'token': ('django.db.models.fields.CharField', [], {'default': "'d5c1f65020ebdc89f20c'", 'max_length': '255'}),
+            'user': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['%s']" % user_model_label})
+        },
+        'oauth2.client': {
+            'Meta': {'object_name': 'Client'},
+            'client_id': ('django.db.models.fields.CharField', [], {'default': "'306fb26cbcc87dd33cdb'", 'max_length': '255'}),
+            'client_secret': ('django.db.models.fields.CharField', [], {'default': "'7e5785add4898448d53767f15373636b918cf0e3'", 'max_length': '255'}),
+            'client_type': ('django.db.models.fields.IntegerField', [], {}),
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'redirect_uri': ('django.db.models.fields.URLField', [], {'max_length': '200'}),
+            'url': ('django.db.models.fields.URLField', [], {'max_length': '200'}),
+            'user': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['%s']" % user_model_label})
+        },
+        'oauth2.grant': {
+            'Meta': {'object_name': 'Grant'},
+            'client': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['oauth2.Client']"}),
+            'code': ('django.db.models.fields.CharField', [], {'default': "'310b2c63e27306ecf5307569dd62340cc4994b73'", 'max_length': '255'}),
+            'expires': ('django.db.models.fields.DateTimeField', [], {'default': 'datetime.datetime(2012, 2, 8, 10, 43, 45, 625956)'}),
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'redirect_uri': ('django.db.models.fields.CharField', [], {'max_length': '255', 'blank': 'True'}),
+            'scope': ('django.db.models.fields.IntegerField', [], {'default': '0'}),
+            'user': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['%s']" % user_model_label})
+        },
+        'oauth2.refreshtoken': {
+            'Meta': {'object_name': 'RefreshToken'},
+            'access_token': ('django.db.models.fields.related.OneToOneField', [], {'related_name': "'refresh_token'", 'unique': 'True', 'to': "orm['oauth2.AccessToken']"}),
+            'client': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['oauth2.Client']"}),
+            'expired': ('django.db.models.fields.BooleanField', [], {'default': 'False'}),
+            'id': ('django.db.models.fields.AutoField', [], {'primary_key': 'True'}),
+            'token': ('django.db.models.fields.CharField', [], {'default': "'ef0ab76037f17769ab2975a816e8f41a1c11d25e'", 'max_length': '255'}),
+            'user': ('django.db.models.fields.related.ForeignKey', [], {'to': "orm['%s']" % user_model_label})
+        }
+    }
+
+    complete_apps = ['oauth2']
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(''.join(line.split()),
+                             ''.join(result.split()))
+
+    def test_e501_shorten_comment_with_aggressive(self):
+        line = """\
+# --------------------------------------------------------------------------------
+"""
+        fixed = """\
+# ------------------------------------------------------------------------
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_escaped_newline(self):
+        line = """\
+if True or \\
+    False:  # test test test test test test test test test test test test test test
+    pass
+"""
+        fixed = """\
+# test test test test test test test test test test test test test test
+if True or False:
+    pass
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_multiline_string(self):
+        line = """\
+print('---------------------------------------------------------------------',
+      ('================================================', '====================='),
+      '''--------------------------------------------------------------------------------
+      ''')
+"""
+        fixed = """\
+print(
+    '---------------------------------------------------------------------',
+    ('================================================',
+     '====================='),
+    '''--------------------------------------------------------------------------------
+      ''')
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_multiline_string_with_addition(self):
+        line = '''\
+def f():
+    email_text += """<html>This is a really long docstring that goes over the column limit and is multi-line.<br><br>
+<b>Czar: </b>"""+despot["Nicholas"]+"""<br>
+<b>Minion: </b>"""+serf["Dmitri"]+"""<br>
+<b>Residence: </b>"""+palace["Winter"]+"""<br>
+</body>
+</html>"""
+'''
+        fixed = '''\
+def f():
+    email_text += """<html>This is a really long docstring that goes over the column limit and is multi-line.<br><br>
+<b>Czar: </b>""" + despot["Nicholas"] + """<br>
+<b>Minion: </b>""" + serf["Dmitri"] + """<br>
+<b>Residence: </b>""" + palace["Winter"] + """<br>
+</body>
+</html>"""
+'''
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_multiline_string_in_parens(self):
+        line = '''\
+def f():
+    email_text += ("""<html>This is a really long docstring that goes over the column limit and is multi-line.<br><br>
+<b>Czar: </b>"""+despot["Nicholas"]+"""<br>
+<b>Minion: </b>"""+serf["Dmitri"]+"""<br>
+<b>Residence: </b>"""+palace["Winter"]+"""<br>
+</body>
+</html>""")
+'''
+        fixed = '''\
+def f():
+    email_text += ("""<html>This is a really long docstring that goes over the column limit and is multi-line.<br><br>
+<b>Czar: </b>""" +
+                   despot["Nicholas"] +
+                   """<br>
+<b>Minion: </b>""" +
+                   serf["Dmitri"] +
+                   """<br>
+<b>Residence: </b>""" +
+                   palace["Winter"] +
+                   """<br>
+</body>
+</html>""")
+'''
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_indentation(self):
+        line = """\
+if True:
+    # comment here
+    print(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
+          bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,cccccccccccccccccccccccccccccccccccccccccc)
+"""
+        fixed = """\
+if True:
+    # comment here
+    print(
+        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
+        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+        cccccccccccccccccccccccccccccccccccccccccc)
+"""
+        with autopep8_context(line, options=['-aa']) as result:
             self.assertEqual(fixed, result)
 
     def test_e501_with_multiple_keys_and_aggressive(self):
@@ -2460,7 +2986,14 @@ one_two_three_four_five_six = {
     'asdfsdflsdkfjl sdflkjsdkfkjsfjsdlkfj sdlkfjlsfjs': '343',
     1: 1}
 """
-        with autopep8_context(line, options=['--aggressive']) as result:
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_aggressive_and_carriage_returns_only(self):
+        """Make sure _find_logical() does not crash."""
+        line = 'if True:\r    from aaaaaaaaaaaaaaaa import bbbbbbbbbbbbbbbbbbb\r    \r    ccccccccccc = None\r'
+        fixed = 'if True:\r    from aaaaaaaaaaaaaaaa import bbbbbbbbbbbbbbbbbbb\r\r    ccccccccccc = None\r'
+        with autopep8_context(line, options=['-aa']) as result:
             self.assertEqual(fixed, result)
 
     def test_e501_should_ignore_imports(self):
@@ -2525,6 +3058,108 @@ def foobar(
         with autopep8_context(line, options=['-aa']) as result:
             self.assertEqual(fixed, result)
 
+    def test_e501_aggressive_with_tuple(self):
+        line = """\
+def f():
+    man_this_is_a_very_long_function_name(an_extremely_long_variable_name,
+                                          ('a string that is long: %s'%'bork'))
+"""
+        fixed = """\
+def f():
+    man_this_is_a_very_long_function_name(
+        an_extremely_long_variable_name,
+        ('a string that is long: %s' %
+         'bork'))
+"""
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_aggressive_with_tuple_in_list(self):
+        line = """\
+def f(self):
+    self._xxxxxxxx(aaaaaa, bbbbbbbbb, cccccccccccccccccc,
+                   [('mmmmmmmmmm', self.yyyyyyyyyy.zzzzzzz/_DDDDD)], eee, 'ff')
+"""
+        fixed = """\
+def f(self):
+    self._xxxxxxxx(
+        aaaaaa, bbbbbbbbb, cccccccccccccccccc, [
+            ('mmmmmmmmmm', self.yyyyyyyyyy.zzzzzzz / _DDDDD)], eee, 'ff')
+"""
+
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_aggressive_decorator(self):
+        line = """\
+@foo(('xxxxxxxxxxxxxxxxxxxxxxxxxx', users.xxxxxxxxxxxxxxxxxxxxxxxxxx), ('yyyyyyyyyyyy', users.yyyyyyyyyyyy), ('zzzzzzzzzzzzzz', users.zzzzzzzzzzzzzz))
+"""
+        fixed = """\
+
+
+@foo(
+    ('xxxxxxxxxxxxxxxxxxxxxxxxxx',
+     users.xxxxxxxxxxxxxxxxxxxxxxxxxx),
+    ('yyyyyyyyyyyy',
+     users.yyyyyyyyyyyy),
+    ('zzzzzzzzzzzzzz',
+     users.zzzzzzzzzzzzzz))
+"""
+
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_aggressive_long_class_name(self):
+        line = """\
+class AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA(BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB):
+    pass
+"""
+        fixed = """\
+class AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA(
+        BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB):
+    pass
+"""
+
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_aggressive_long_comment_and_long_line(self):
+        line = """\
+def foo():
+    #. This is not a novel to be tossed aside lightly. It should be throw with great force.
+    self.xxxxxxxxx(_('yyyyyyyyyyyyy yyyyyyyyyyyy yyyyyyyy yyyyyyyy y'), 'zzzzzzzzzzzzzzzzzzz', bork='urgent')
+"""
+        fixed = """\
+def foo():
+    #. This is not a novel to be tossed aside lightly. It should be throw with great force.
+    self.xxxxxxxxx(
+        _('yyyyyyyyyyyyy yyyyyyyyyyyy yyyyyyyy yyyyyyyy y'),
+        'zzzzzzzzzzzzzzzzzzz',
+        bork='urgent')
+"""
+
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_aggressive_intermingled_comments(self):
+        line = """\
+A = [
+    # A comment
+    ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbbbbbbbb', 'cccccccccccccccccccccc']
+]
+"""
+        fixed = """\
+A = [
+    # A comment
+    ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+     'bbbbbbbbbbbbbbbbbbbbbb',
+     'cccccccccccccccccccccc']
+]
+"""
+
+        with autopep8_context(line, options=['-aa']) as result:
+            self.assertEqual(fixed, result)
+
     def test_e502(self):
         line = "print('abc'\\\n      'def')\n"
         fixed = "print('abc'\n      'def')\n"
@@ -2574,7 +3209,7 @@ def foobar(
             self.assertEqual(fixed, result)
 
     def test_e702_with_non_ascii_file(self):
-        line = """
+        line = """\
 # -*- coding: utf-8 -*-
 # French comment with accent é
 # Un commentaire en français avec un accent é
@@ -2582,9 +3217,9 @@ def foobar(
 import time
 
 time.strftime('%d-%m-%Y');
-""".lstrip()
+"""
 
-        fixed = """
+        fixed = """\
 # -*- coding: utf-8 -*-
 # French comment with accent é
 # Un commentaire en français avec un accent é
@@ -2592,7 +3227,7 @@ time.strftime('%d-%m-%Y');
 import time
 
 time.strftime('%d-%m-%Y')
-""".lstrip()
+"""
 
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
@@ -2637,14 +3272,14 @@ def foo():
             self.assertEqual(fixed, result)
 
     def test_e702_indent_correctly(self):
-        line = """
+        line = """\
 
 (
     1,
     2,
     3); 4; 5; 5  # pyflakes
 """
-        fixed = """
+        fixed = """\
 
 (
     1,
@@ -2670,14 +3305,14 @@ def foo():
             self.assertEqual(fixed, result)
 
     def test_e702_with_semicolon_after_string(self):
-        line = """
+        line = """\
 raise IOError('abc '
               'def.');
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 raise IOError('abc '
               'def.')
-""".lstrip()
+"""
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
@@ -2770,18 +3405,18 @@ raise IOError('abc '
             self.assertEqual(fixed, result)
 
     def test_should_preserve_vertical_tab(self):
-        line = """
+        line = """\
 #Memory Bu\vffer Register:
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 # Memory Bu\vffer Register:
-""".lstrip()
+"""
 
         with autopep8_context(line) as result:
             self.assertEqual(fixed, result)
 
     def test_w191_should_ignore_multiline_strings(self):
-        line = """
+        line = """\
 print(3 <> 4, '''
 while True:
     if True:
@@ -2789,8 +3424,8 @@ while True:
 \t''', 4 <> 5)
 if True:
 \t123
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 print(3 != 4, '''
 while True:
     if True:
@@ -2798,12 +3433,12 @@ while True:
 \t''', 4 != 5)
 if True:
     123
-""".lstrip()
+"""
         with autopep8_context(line, options=['--aggressive']) as result:
             self.assertEqual(fixed, result)
 
     def test_w191_should_ignore_tabs_in_strings(self):
-        line = """
+        line = """\
 if True:
 \tx = '''
 \t\tblah
@@ -2814,8 +3449,8 @@ if True:
 \t123
 else:
 \t32
-""".lstrip()
-        fixed = """
+"""
+        fixed = """\
 if True:
     x = '''
 \t\tblah
@@ -2826,7 +3461,7 @@ if True:
     123
 else:
     32
-""".lstrip()
+"""
         with autopep8_context(line, options=['--aggressive']) as result:
             self.assertEqual(fixed, result)
 
@@ -2927,12 +3562,11 @@ else:
             self.assertEqual(line, result)
 
     def test_w601_with_multiline(self):
-        line = """
-
+        line = """\
 a.has_key(
     0
 )
-""".lstrip()
+"""
         fixed = '0 in a\n'
         with autopep8_context(line, options=['--aggressive']) as result:
             self.assertEqual(fixed, result)
@@ -2940,17 +3574,17 @@ a.has_key(
     @unittest.skipIf(sys.version_info < (2, 6, 4),
                      'older versions of 2.6 may be buggy')
     def test_w601_with_non_ascii(self):
-        line = """
+        line = """\
 # -*- coding: utf-8 -*-
 ## éはe
 correct = dict().has_key('good syntax ?')
-""".lstrip()
+"""
 
-        fixed = """
+        fixed = """\
 # -*- coding: utf-8 -*-
 # éはe
 correct = 'good syntax ?' in dict()
-""".lstrip()
+"""
 
         with autopep8_context(line, options=['--aggressive']) as result:
             self.assertEqual(fixed, result)
@@ -3151,6 +3785,8 @@ correct = 'good syntax ?' in dict()
 
 class CommandLineTests(unittest.TestCase):
 
+    maxDiff = None
+
     def test_diff(self):
         line = "'abc'  \n"
         fixed = "-'abc'  \n+'abc'\n"
@@ -3167,6 +3803,12 @@ class CommandLineTests(unittest.TestCase):
         error = p.communicate()[1].decode('utf-8')
         self.assertIn('non_existent_file', error)
 
+    def test_diff_with_standard_in(self):
+        p = Popen(list(AUTOPEP8_CMD_TUPLE) + ['--diff', '-'],
+                  stdout=PIPE, stderr=PIPE)
+        error = p.communicate()[1].decode('utf-8')
+        self.assertIn('cannot', error)
+
     def test_pep8_passes(self):
         line = "'abc'  \n"
         fixed = "'abc'\n"
@@ -3181,7 +3823,7 @@ class CommandLineTests(unittest.TestCase):
     def test_help(self):
         p = Popen(list(AUTOPEP8_CMD_TUPLE) + ['-h'],
                   stdout=PIPE)
-        self.assertIn('Usage:', p.communicate()[0].decode('utf-8'))
+        self.assertIn('usage:', p.communicate()[0].decode('utf-8').lower())
 
     def test_verbose(self):
         line = 'bad_syntax)'
@@ -3364,7 +4006,7 @@ class CommandLineTests(unittest.TestCase):
 
     def test_list_fixes(self):
         with autopep8_subprocess('', options=['--list-fixes']) as result:
-            self.assertIn('E101', result)
+            self.assertIn('E121', result)
 
     def test_fixpep8_class_constructor(self):
         line = 'print 1\nprint 2\n'
@@ -3414,13 +4056,914 @@ class CommandLineTests(unittest.TestCase):
             process.communicate(line.encode('utf-8'))[0].decode('utf-8'))
 
 
+class ExperimentalSystemTests(unittest.TestCase):
+
+    maxDiff = None
+
+    def test_e501_experimental_basic(self):
+        line = """\
+print(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333, 333, 333)
+"""
+        fixed = """\
+print(
+    111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333,
+    333, 333)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_commas_and_colons(self):
+        line = """\
+foobar = {'aaaaaaaaaaaa': 'bbbbbbbbbbbbbbbb', 'dddddd': 'eeeeeeeeeeeeeeee', 'ffffffffffff': 'gggggggg'}
+"""
+        fixed = """\
+foobar = {
+    'aaaaaaaaaaaa': 'bbbbbbbbbbbbbbbb', 'dddddd': 'eeeeeeeeeeeeeeee',
+    'ffffffffffff': 'gggggggg'}
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_inline_comments(self):
+        line = """\
+'                                                          '  # Long inline comments should be moved above.
+if True:
+    '                                                          '  # Long inline comments should be moved above.
+"""
+        fixed = """\
+# Long inline comments should be moved above.
+'                                                          '
+if True:
+    # Long inline comments should be moved above.
+    '                                                          '
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_inline_comments_should_skip_multiline(self):
+        line = """\
+'''This should be left alone. -----------------------------------------------------
+
+'''  # foo
+
+'''This should be left alone. -----------------------------------------------------
+
+''' \\
+# foo
+
+'''This should be left alone. -----------------------------------------------------
+
+''' \\
+\\
+# foo
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_experimental_with_inline_comments_should_skip_keywords(self):
+        line = """\
+'                                                          '  # noqa Long inline comments should be moved above.
+if True:
+    '                                                          '  # pylint: disable-msgs=E0001
+    '                                                          '  # pragma: no cover
+    '                                                          '  # pragma: no cover
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_experimental_with_inline_comments_should_skip_edge_cases(self):
+        line = """\
+if True:
+    x = \\
+        '                                                          '  # Long inline comments should be moved above.
+"""
+        fixed = """\
+if True:
+    # Long inline comments should be moved above.
+    x = '                                                          '
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_basic_should_prefer_balanced_brackets(self):
+        line = """\
+if True:
+    reconstructed = iradon(radon(image), filter="ramp", interpolation="nearest")
+"""
+        fixed = """\
+if True:
+    reconstructed = iradon(
+        radon(image), filter="ramp", interpolation="nearest")
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_very_long_line(self):
+        line = """\
+x = [3244234243234, 234234234324, 234234324, 23424234, 234234234, 234234, 234243, 234243, 234234234324, 234234324, 23424234, 234234234, 234234, 234243, 234243]
+"""
+        fixed = """\
+x = [
+    3244234243234, 234234234324, 234234324, 23424234, 234234234, 234234,
+    234243, 234243, 234234234324, 234234324, 23424234, 234234234, 234234,
+    234243, 234243]
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_shorten_at_commas_skip(self):
+        line = """\
+parser.add_argument('source_corpus', help='corpus name/path relative to an nltk_data directory')
+parser.add_argument('target_corpus', help='corpus name/path relative to an nltk_data directory')
+"""
+        fixed = """\
+parser.add_argument(
+    'source_corpus',
+    help='corpus name/path relative to an nltk_data directory')
+parser.add_argument(
+    'target_corpus',
+    help='corpus name/path relative to an nltk_data directory')
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_shorter_length(self):
+        line = """\
+foooooooooooooooooo('abcdefghijklmnopqrstuvwxyz')
+"""
+        fixed = """\
+foooooooooooooooooo(
+    'abcdefghijklmnopqrstuvwxyz')
+"""
+        with autopep8_context(line,
+                              options=['--max-line-length=40',
+                                       '--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_indent(self):
+        line = """\
+
+def d():
+    print(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333, 333, 333)
+"""
+        fixed = """\
+
+def d():
+    print(
+        111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333,
+        333, 333, 333)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_alone_with_indentation(self):
+        line = """\
+if True:
+    print(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333, 333, 333)
+"""
+        fixed = """\
+if True:
+    print(
+        111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333,
+        333, 333, 333)
+"""
+        with autopep8_context(line, options=['--select=E501',
+                                             '--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_alone_with_tuple(self):
+        line = """\
+fooooooooooooooooooooooooooooooo000000000000000000000000 = [1,
+                                                            ('TransferTime', 'FLOAT')
+                                                           ]
+"""
+        fixed = """\
+fooooooooooooooooooooooooooooooo000000000000000000000000 = [
+    1, ('TransferTime', 'FLOAT')]
+"""
+        with autopep8_context(line, options=['--select=E501',
+                                             '--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_should_not_try_to_break_at_every_paren_in_arithmetic(self):
+        line = """\
+term3 = w6 * c5 * (8.0 * psi4 * (11.0 - 24.0 * t2) - 28 * psi3 * (1 - 6.0 * t2) + psi2 * (1 - 32 * t2) - psi * (2.0 * t2) + t4) / 720.0
+this_should_be_shortened = ('                                                                 ', '            ')
+"""
+        fixed = """\
+term3 = w6 * c5 * (8.0 * psi4 * (11.0 - 24.0 * t2) - 28 * psi3 *
+                   (1 - 6.0 * t2) + psi2 * (1 - 32 * t2) - psi * (2.0 * t2) + t4) / 720.0
+this_should_be_shortened = (
+    '                                                                 ',
+    '            ')
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_arithmetic_operator_with_indent(self):
+        line = """\
+def d():
+    111 + 111 + 111 + 111 + 111 + 222 + 222 + 222 + 222 + 222 + 222 + 222 + 222 + 222 + 333 + 333 + 333 + 333
+"""
+        fixed = """\
+def d():
+    111 + 111 + 111 + 111 + 111 + 222 + 222 + 222 + 222 + \\
+        222 + 222 + 222 + 222 + 222 + 333 + 333 + 333 + 333
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_more_complicated(self):
+        line = """\
+blahblah = os.environ.get('blahblah') or os.environ.get('blahblahblah') or os.environ.get('blahblahblahblah')
+"""
+        fixed = """\
+blahblah = os.environ.get('blahblah') or os.environ.get(
+    'blahblahblah') or os.environ.get('blahblahblahblah')
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_skip_even_more_complicated(self):
+        line = """\
+if True:
+    if True:
+        if True:
+            blah = blah.blah_blah_blah_bla_bl(blahb.blah, blah.blah,
+                                              blah=blah.label, blah_blah=blah_blah,
+                                              blah_blah2=blah_blah)
+"""
+        fixed = """\
+if True:
+    if True:
+        if True:
+            blah = blah.blah_blah_blah_bla_bl(
+                blahb.blah, blah.blah, blah=blah.label, blah_blah=blah_blah,
+                blah_blah2=blah_blah)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_prefer_to_break_at_beginning(self):
+        """We prefer not to leave part of the arguments hanging."""
+        line = """\
+looooooooooooooong = foo(one, two, three, four, five, six, seven, eight, nine, ten)
+"""
+        fixed = """\
+looooooooooooooong = foo(
+    one, two, three, four, five, six, seven, eight, nine, ten)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_logical_fix(self):
+        line = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(aaaaaaaaaaaaaaaaaaaaaaa,
+                             bbbbbbbbbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        fixed = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    aaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_logical_fix_and_physical_fix(self):
+        line = """\
+# -------------------------------------------------------------------------------
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(aaaaaaaaaaaaaaaaaaaaaaa,
+                             bbbbbbbbbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        fixed = """\
+# ------------------------------------------------------------------------
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    aaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_logical_fix_and_adjacent_strings(self):
+        line = """\
+print('a-----------------------' 'b-----------------------' 'c-----------------------'
+      'd-----------------------''e'"f"r"g")
+"""
+        fixed = """\
+print(
+    'a-----------------------'
+    'b-----------------------'
+    'c-----------------------'
+    'd-----------------------'
+    'e'
+    "f"
+    r"g")
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_multiple_lines(self):
+        line = """\
+foo_bar_zap_bing_bang_boom(111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333,
+                           111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333)
+"""
+        fixed = """\
+foo_bar_zap_bing_bang_boom(
+    111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333,
+    111, 111, 111, 111, 222, 222, 222, 222, 222, 222, 222, 222, 222, 333, 333)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_do_not_break_on_keyword(self):
+        # We don't want to put a newline after equals for keywords as this
+        # violates PEP 8.
+        line = """\
+if True:
+    long_variable_name = tempfile.mkstemp(prefix='abcdefghijklmnopqrstuvwxyz0123456789')
+"""
+        fixed = """\
+if True:
+    long_variable_name = tempfile.mkstemp(
+        prefix='abcdefghijklmnopqrstuvwxyz0123456789')
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_do_not_begin_line_with_comma(self):
+        line = """\
+def dummy():
+    if True:
+        if True:
+            if True:
+                object = ModifyAction( [MODIFY70.text, OBJECTBINDING71.text, COLON72.text], MODIFY70.getLine(), MODIFY70.getCharPositionInLine() )
+"""
+        fixed = """\
+def dummy():
+    if True:
+        if True:
+            if True:
+                object = ModifyAction(
+                    [MODIFY70.text, OBJECTBINDING71.text, COLON72.text],
+                    MODIFY70.getLine(), MODIFY70.getCharPositionInLine())
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_should_not_break_on_dot(self):
+        line = """\
+if True:
+    if True:
+        raise xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx('xxxxxxxxxxxxxxxxx "{d}" xxxxxxxxxxxxxx'.format(d='xxxxxxxxxxxxxxx'))
+"""
+        fixed = """\
+if True:
+    if True:
+        raise xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+            'xxxxxxxxxxxxxxxxx "{d}" xxxxxxxxxxxxxx'.format(
+                d='xxxxxxxxxxxxxxx'))
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_comment(self):
+        line = """123
+                        # This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+
+# http://foo.bar/abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-
+
+# The following is ugly commented-out code and should not be touched.
+#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = 1
+"""
+        fixed = """123
+                        # This is a long comment that should be wrapped. I will
+                        # wrap it using textwrap to be within 72 characters.
+
+# http://foo.bar/abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-abc-
+
+# The following is ugly commented-out code and should not be touched.
+#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx = 1
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_comment_should_not_modify_docstring(self):
+        line = '''\
+def foo():
+    """
+                        # This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+    """
+'''
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_experimental_should_only_modify_last_comment(self):
+        line = """123
+                        # This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+                        # 1. This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+                        # 2. This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+                        # 3. This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+"""
+        fixed = """123
+                        # This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+                        # 1. This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+                        # 2. This is a long comment that should be wrapped. I will wrap it using textwrap to be within 72 characters.
+                        # 3. This is a long comment that should be wrapped. I
+                        # will wrap it using textwrap to be within 72
+                        # characters.
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_should_not_interfere_with_non_comment(self):
+        line = '''
+"""
+# not actually a comment %d. 12345678901234567890, 12345678901234567890, 12345678901234567890.
+""" % (0,)
+'''
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_experimental_should_cut_comment_pattern(self):
+        line = """123
+# -- Useless lines ----------------------------------------------------------------------
+321
+"""
+        fixed = """123
+# -- Useless lines -------------------------------------------------------
+321
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_function_should_not_break_on_colon(self):
+        line = r"""
+class Useless(object):
+
+    def _table_field_is_plain_widget(self, widget):
+        if widget.__class__ == Widget or\
+                (widget.__class__ == WidgetMeta and Widget in widget.__bases__):
+            return True
+
+        return False
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_with_experimental(self):
+        # FIXME: This has really bad output.
+        line = """\
+models = {
+    'auth.group': {
+        'Meta': {'object_name': 'Group'},
+        'permissions': ('django.db.models.fields.related.ManyToManyField', [], {'to': "orm['auth.Permission']", 'symmetrical': 'False', 'blank': 'True'})
+    },
+    'auth.permission': {
+        'Meta': {'ordering': "('content_type__app_label', 'content_type__model', 'codename')", 'unique_together': "(('content_type', 'codename'),)", 'object_name': 'Permission'},
+        'name': ('django.db.models.fields.CharField', [], {'max_length': '50'})
+    },
+}
+"""
+        fixed = """\
+models = {
+    'auth.group':
+    {'Meta': {'object_name': 'Group'}, 'permissions':
+     ('django.db.models.fields.related.ManyToManyField', [],
+      {'to': "orm['auth.Permission']", 'symmetrical': 'False', 'blank':
+       'True'})}, 'auth.permission':
+    {'Meta':
+     {'ordering':
+      "('content_type__app_label', 'content_type__model', 'codename')",
+      'unique_together': "(('content_type', 'codename'),)", 'object_name':
+      'Permission'}, 'name':
+     ('django.db.models.fields.CharField', [], {'max_length': '50'})}, }
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_and_multiple_logical_lines(self):
+        line = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(aaaaaaaaaaaaaaaaaaaaaaa,
+                             bbbbbbbbbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(aaaaaaaaaaaaaaaaaaaaaaa,
+                             bbbbbbbbbbbbbbbbbbbbbbbbbbbb, cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        fixed = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    aaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+xxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    aaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+    cccccccccccccccccccccccccccc, dddddddddddddddddddddddd)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_and_multiple_logical_lines_with_math(self):
+        line = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx([-1 + 5 / -10,
+                                                                            100,
+                                                                            -3 - 4])
+"""
+        fixed = """\
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx(
+    [-1 + 5 / -10, 100, -3 - 4])
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_and_import(self):
+        line = """\
+from . import (xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,
+               yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy)
+"""
+        fixed = """\
+from . import (
+    xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,
+    yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_shorten_comment_with_experimental(self):
+        line = """\
+# --------------------------------------------------------------------------------
+"""
+        fixed = """\
+# ------------------------------------------------------------------------
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_experimental_and_escaped_newline(self):
+        line = """\
+if True or \\
+    False:  # test test test test test test test test test test test test test test
+    pass
+"""
+        fixed = """\
+# test test test test test test test test test test test test test test
+if True or False:
+    pass
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_experimental_and_multiline_string(self):
+        line = """\
+print('---------------------------------------------------------------------',
+      ('================================================', '====================='),
+      '''--------------------------------------------------------------------------------
+      ''')
+"""
+        fixed = """\
+print(
+    '---------------------------------------------------------------------',
+    ('================================================',
+     '====================='),
+    '''--------------------------------------------------------------------------------
+      ''')
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_experimental_and_multiline_string_with_addition(self):
+        line = '''\
+def f():
+    email_text += """<html>This is a really long docstring that goes over the column limit and is multi-line.<br><br>
+<b>Czar: </b>"""+despot["Nicholas"]+"""<br>
+<b>Minion: </b>"""+serf["Dmitri"]+"""<br>
+<b>Residence: </b>"""+palace["Winter"]+"""<br>
+</body>
+</html>"""
+'''
+        fixed = '''\
+def f():
+    email_text += """<html>This is a really long docstring that goes over the column limit and is multi-line.<br><br>
+<b>Czar: </b>""" + despot["Nicholas"] + """<br>
+<b>Minion: </b>""" + serf["Dmitri"] + """<br>
+<b>Residence: </b>""" + palace["Winter"] + """<br>
+</body>
+</html>"""
+'''
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_experimental_and_multiline_string_in_parens(self):
+        line = '''\
+def f():
+    email_text += ("""<html>This is a really long docstring that goes over the column limit and is multi-line.<br><br>
+<b>Czar: </b>"""+despot["Nicholas"]+"""<br>
+<b>Minion: </b>"""+serf["Dmitri"]+"""<br>
+<b>Residence: </b>"""+palace["Winter"]+"""<br>
+</body>
+</html>""")
+'''
+        fixed = '''\
+def f():
+    email_text += ("""<html>This is a really long docstring that goes over the column limit and is multi-line.<br><br>
+<b>Czar: </b>""" + despot["Nicholas"] + """<br>
+<b>Minion: </b>""" + serf["Dmitri"] + """<br>
+<b>Residence: </b>""" + palace["Winter"] + """<br>
+</body>
+</html>""")
+'''
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_experimental_and_indentation(self):
+        line = """\
+if True:
+    # comment here
+    print(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
+          bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,cccccccccccccccccccccccccccccccccccccccccc)
+"""
+        fixed = """\
+if True:
+    # comment here
+    print(
+        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,
+        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,
+        cccccccccccccccccccccccccccccccccccccccccc)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_multiple_keys_and_experimental(self):
+        line = """\
+one_two_three_four_five_six = {'one two three four five': 12345, 'asdfsdflsdkfjl sdflkjsdkfkjsfjsdlkfj sdlkfjlsfjs': '343',
+                               1: 1}
+"""
+        fixed = """\
+one_two_three_four_five_six = {
+    'one two three four five': 12345,
+    'asdfsdflsdkfjl sdflkjsdkfkjsfjsdlkfj sdlkfjlsfjs': '343', 1: 1}
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_with_experimental_and_carriage_returns_only(self):
+        """Make sure _find_logical() does not crash."""
+        line = 'if True:\r    from aaaaaaaaaaaaaaaa import bbbbbbbbbbbbbbbbbbb\r    \r    ccccccccccc = None\r'
+        fixed = 'if True:\r    from aaaaaaaaaaaaaaaa import bbbbbbbbbbbbbbbbbbb\r\r    ccccccccccc = None\r'
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_should_ignore_imports(self):
+        line = """\
+import logging, os, bleach, commonware, urllib2, json, time, requests, urlparse, re
+"""
+        with autopep8_context(line, options=['--select=E501',
+                                             '--experimental']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_experimental_should_not_do_useless_things(self):
+        line = """\
+foo('                                                                            ')
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_experimental_with_percent(self):
+        line = """\
+raise MultiProjectException("Ambiguous workspace: %s=%s, %s" % ( varname, varname_path, os.path.abspath(config_filename)))
+"""
+        fixed = """\
+raise MultiProjectException(
+    "Ambiguous workspace: %s=%s, %s" %
+    (varname, varname_path, os.path.abspath(config_filename)))
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_def(self):
+        line = """\
+def foobar(sldfkjlsdfsdf, kksdfsdfsf,sdfsdfsdf, sdfsdfkdk, szdfsdfsdf, sdfsdfsdfsdlkfjsdlf, sdfsdfddf,sdfsdfsfd, sdfsdfdsf):
+    pass
+"""
+        fixed = """\
+
+
+def foobar(
+        sldfkjlsdfsdf, kksdfsdfsf, sdfsdfsdf, sdfsdfkdk, szdfsdfsdf,
+        sdfsdfsdfsdlkfjsdlf, sdfsdfddf, sdfsdfsfd, sdfsdfdsf):
+    pass
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_tuple(self):
+        line = """\
+def f():
+    man_this_is_a_very_long_function_name(an_extremely_long_variable_name,
+                                          ('a string that is long: %s'%'bork'))
+"""
+        fixed = """\
+def f():
+    man_this_is_a_very_long_function_name(
+        an_extremely_long_variable_name,
+        ('a string that is long: %s' % 'bork'))
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_tuple_in_list(self):
+        line = """\
+def f(self):
+    self._xxxxxxxx(aaaaaa, bbbbbbbbb, cccccccccccccccccc,
+                   [('mmmmmmmmmm', self.yyyyyyyyyy.zzzzzzz/_DDDDD)], eee, 'ff')
+"""
+        fixed = """\
+def f(self):
+    self._xxxxxxxx(
+        aaaaaa, bbbbbbbbb, cccccccccccccccccc,
+        [('mmmmmmmmmm', self.yyyyyyyyyy.zzzzzzz / _DDDDD)], eee, 'ff')
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    @unittest.skipIf(sys.version_info < (2, 7),
+                     'Python 2.6 does not support dictionary comprehensions')
+    def test_e501_experimental_with_complex_reformat(self):
+        line = """\
+bork(111, 111, 111, 111, 222, 222, 222, { 'foo': 222, 'qux': 222 }, ((['hello', 'world'], ['yo', 'stella', "how's", 'it'], ['going']), {str(i): i for i in range(10)}, {'bork':((x, x**x) for x in range(10))}), 222, 222, 222, 222, 333, 333, 333, 333)
+"""
+        fixed = """\
+bork(
+    111, 111, 111, 111, 222, 222, 222, {'foo': 222, 'qux': 222},
+    ((['hello', 'world'], ['yo', 'stella', "how's", 'it'], ['going']),
+     {str(i): i for i in range(10)},
+     {'bork': ((x, x ** x) for x in range(10))}), 222, 222, 222, 222, 333, 333,
+    333, 333)
+"""
+
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_multiple_lines_and_quotes(self):
+        line = """\
+if True:
+    xxxxxxxxxxx = xxxxxxxxxxxxxxxxx(xxxxxxxxxxx, xxxxxxxxxxxxxxxx={'xxxxxxxxxxxx': 'xxxxx',
+                                                                   'xxxxxxxxxxx': xx,
+                                                                   'xxxxxxxx': False,
+                                                                   })
+"""
+        fixed = """\
+if True:
+    xxxxxxxxxxx = xxxxxxxxxxxxxxxxx(
+        xxxxxxxxxxx, xxxxxxxxxxxxxxxx={'xxxxxxxxxxxx': 'xxxxx', 'xxxxxxxxxxx':
+                                       xx, 'xxxxxxxx': False, })
+"""
+
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_avoid_breaking_at_empty_parentheses_if_possible(self):
+        line = """\
+someverylongindenttionwhatnot().foo().bar().baz("and here is a long string 123456789012345678901234567890")
+"""
+        fixed = """\
+someverylongindenttionwhatnot().foo().bar().baz(
+    "and here is a long string 123456789012345678901234567890")
+"""
+
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_unicode(self):
+        line = """\
+someverylongindenttionwhatnot().foo().bar().baz("and here is a l안녕하세요 123456789012345678901234567890")
+"""
+        fixed = """\
+someverylongindenttionwhatnot().foo().bar().baz(
+    "and here is a l안녕하세요 123456789012345678901234567890")
+"""
+
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_with_tuple_assignment(self):
+        line = """\
+if True:
+    (xxxxxxx,) = xxxx.xxxxxxx.xxxxx(xxxxxxxxxxxx.xx).xxxxxx(xxxxxxxxxxxx.xxxx == xxxx.xxxx).xxxxx()
+"""
+        fixed = """\
+if True:
+    (xxxxxxx,) = xxxx.xxxxxxx.xxxxx(xxxxxxxxxxxx.xx).xxxxxx(
+        xxxxxxxxxxxx.xxxx == xxxx.xxxx).xxxxx()
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_tuple_on_line(self):
+        line = """\
+def f():
+    self.aaaaaaaaa(bbbbbb, ccccccccc, dddddddddddddddd,
+                   ((x, y/eeeeeee) for x, y in self.outputs.total.iteritems()),
+                   fff, 'GG')
+"""
+        fixed = """\
+def f():
+    self.aaaaaaaaa(
+        bbbbbb, ccccccccc, dddddddddddddddd,
+        ((x, y / eeeeeee) for x, y in self.outputs.total.iteritems()), fff,
+        'GG')
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_tuple_on_line_two_space_indent(self):
+        line = """\
+def f():
+  self.aaaaaaaaa(bbbbbb, ccccccccc, dddddddddddddddd,
+                 ((x, y/eeeeeee) for x, y in self.outputs.total.iteritems()),
+                 fff, 'GG')
+"""
+        fixed = """\
+def f():
+  self.aaaaaaaaa(bbbbbb, ccccccccc, dddddddddddddddd,
+                 ((x, y / eeeeeee) for x, y in self.outputs.total.iteritems()),
+                 fff, 'GG')
+"""
+        with autopep8_context(line, options=['--experimental',
+                                             '--indent-size=2']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_oversized_default_initializer(self):
+        line = """\
+aaaaaaaaaaaaaaaaaaaaa(lllll,mmmmmmmm,nnn,fffffffffff,ggggggggggg,hhh,ddddddddddddd=eeeeeeeee,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=ccccccccccccccccccccccccccccccccccccccccccccccccc,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=cccccccccccccccccccccccccccccccccccccccccccccccc)
+"""
+        fixed = """\
+aaaaaaaaaaaaaaaaaaaaa(
+    lllll, mmmmmmmm, nnn, fffffffffff, ggggggggggg, hhh,
+    ddddddddddddd=eeeeeeeee,
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=ccccccccccccccccccccccccccccccccccccccccccccccccc,
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=cccccccccccccccccccccccccccccccccccccccccccccccc)
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_decorator(self):
+        line = """\
+@foo(('xxxxxxxxxxxxxxxxxxxxxxxxxx', users.xxxxxxxxxxxxxxxxxxxxxxxxxx), ('yyyyyyyyyyyy', users.yyyyyyyyyyyy), ('zzzzzzzzzzzzzz', users.zzzzzzzzzzzzzz))
+"""
+        fixed = """\
+
+
+@foo(
+    ('xxxxxxxxxxxxxxxxxxxxxxxxxx', users.xxxxxxxxxxxxxxxxxxxxxxxxxx),
+    ('yyyyyyyyyyyy', users.yyyyyyyyyyyy),
+    ('zzzzzzzzzzzzzz', users.zzzzzzzzzzzzzz))
+"""
+
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_long_class_name(self):
+        line = """\
+class AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA(BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB):
+    pass
+"""
+        fixed = """\
+class AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA(
+        BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB):
+    pass
+"""
+
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+    def test_e501_experimental_no_line_change(self):
+        line = """\
+    return '<a href="javascript:;" class="copy-to-clipboard-button" data-clipboard-text="%s" title="copy url to clipboard">Copy Link</a>' % url
+"""
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(line, result)
+
+    def test_e501_experimental_splitting_small_arrays(self):
+        line = """\
+def foo():
+    unspecified[service] = ('# The %s brown fox jumped over the lazy, good for nothing '
+                            'dog until it grew tired and set its sights upon the cat!' % adj)
+"""
+        fixed = """\
+def foo():
+    unspecified[service] = (
+        '# The %s brown fox jumped over the lazy, good for nothing '
+        'dog until it grew tired and set its sights upon the cat!' % adj)
+"""
+
+        with autopep8_context(line, options=['--experimental']) as result:
+            self.assertEqual(fixed, result)
+
+
 @contextlib.contextmanager
 def autopep8_context(line, options=None):
     if not options:
         options = []
 
     with temporary_file_context(line) as filename:
-        options, _ = autopep8.parse_args([filename] + list(options))
+        options = autopep8.parse_args([filename] + list(options))
         yield autopep8.fix_file(filename=filename, options=options)
 
 
