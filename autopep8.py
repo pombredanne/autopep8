@@ -40,6 +40,7 @@ from __future__ import division
 from __future__ import print_function
 from __future__ import unicode_literals
 
+import bisect
 import codecs
 import collections
 import copy
@@ -47,6 +48,7 @@ import difflib
 import fnmatch
 import inspect
 import io
+import itertools
 import keyword
 import locale
 import os
@@ -65,7 +67,7 @@ except NameError:
     unicode = str
 
 
-__version__ = '1.0'
+__version__ = '1.0.2'
 
 
 CR = '\r'
@@ -171,7 +173,8 @@ def extended_blank_lines(logical_line,
 pep8.register_check(extended_blank_lines)
 
 
-def continued_indentation(logical_line, tokens, indent_level, noqa):
+def continued_indentation(logical_line, tokens, indent_level, indent_char,
+                          noqa):
     """Override pep8's function to provide indentation information."""
     first_row = tokens[0][2][0]
     nrows = 1 + tokens[-1][2][0] - first_row
@@ -185,12 +188,22 @@ def continued_indentation(logical_line, tokens, indent_level, noqa):
     indent_next = logical_line.endswith(':')
 
     row = depth = 0
+    valid_hangs = (
+        (DEFAULT_INDENT_SIZE,)
+        if indent_char != '\t' else (DEFAULT_INDENT_SIZE,
+                                     2 * DEFAULT_INDENT_SIZE)
+    )
 
     # Remember how many brackets were opened on each line.
     parens = [0] * nrows
 
     # Relative indents of physical lines.
     rel_indent = [0] * nrows
+
+    # For each depth, collect a list of opening rows.
+    open_rows = [[0]]
+    # For each depth, memorize the hanging indentation.
+    hangs = [None]
 
     # Visual indents.
     indent_chances = {}
@@ -217,17 +230,18 @@ def continued_indentation(logical_line, tokens, indent_level, noqa):
             # Record the initial indent.
             rel_indent[row] = pep8.expand_indent(line) - indent_level
 
-            if depth:
-                # A bracket expression in a continuation line.
-                # Find the line that it was opened on.
-                for open_row in range(row - 1, -1, -1):
-                    if parens[open_row]:
-                        break
-            else:
-                # An unbracketed continuation line (ie, backslash).
-                open_row = 0
-            hang = rel_indent[row] - rel_indent[open_row]
+            # Identify closing bracket.
             close_bracket = (token_type == tokenize.OP and text in ']})')
+
+            # Is the indent relative to an opening bracket line?
+            for open_row in reversed(open_rows[depth]):
+                hang = rel_indent[row] - rel_indent[open_row]
+                hanging_indent = hang in valid_hangs
+                if hanging_indent:
+                    break
+            if hangs[depth]:
+                hanging_indent = (hang == hangs[depth])
+
             visual_indent = (not close_bracket and hang > 0 and
                              indent_chances.get(start[1]))
 
@@ -237,23 +251,23 @@ def continued_indentation(logical_line, tokens, indent_level, noqa):
                     yield (start, 'E124 {0}'.format(indent[depth]))
             elif close_bracket and not hang:
                 pass
-            elif visual_indent is True:
-                # Visual indent is verified.
-                if not indent[depth]:
-                    indent[depth] = start[1]
-            elif visual_indent in (text, unicode):
-                # Ignore token lined up with matching one from a previous line.
-                pass
             elif indent[depth] and start[1] < indent[depth]:
                 # Visual indent is broken.
                 yield (start, 'E128 {0}'.format(indent[depth]))
-            elif (hang == DEFAULT_INDENT_SIZE or
+            elif (hanging_indent or
                   (indent_next and
                    rel_indent[row] == 2 * DEFAULT_INDENT_SIZE)):
                 # Hanging indent is verified.
                 if close_bracket:
                     yield (start, 'E123 {0}'.format(indent_level +
                                                     rel_indent[open_row]))
+                hangs[depth] = hang
+            elif visual_indent is True:
+                # Visual indent is verified.
+                indent[depth] = start[1]
+            elif visual_indent in (text, unicode):
+                # Ignore token lined up with matching one from a previous line.
+                pass
             else:
                 one_indented = (indent_level + rel_indent[open_row] +
                                 DEFAULT_INDENT_SIZE)
@@ -262,10 +276,11 @@ def continued_indentation(logical_line, tokens, indent_level, noqa):
                     error = ('E122', one_indented)
                 elif indent[depth]:
                     error = ('E127', indent[depth])
-                elif hang % DEFAULT_INDENT_SIZE:
-                    error = ('E121', one_indented)
-                else:
+                elif hang > DEFAULT_INDENT_SIZE:
                     error = ('E126', one_indented)
+                else:
+                    hangs[depth] = hang
+                    error = ('E121', one_indented)
 
                 yield (start, '{0} {1}'.format(*error))
 
@@ -282,29 +297,36 @@ def continued_indentation(logical_line, tokens, indent_level, noqa):
         # 4.
         elif not indent_chances and not row and not depth and text == 'if':
             indent_chances[end[1] + 1] = True
+        elif text == ':' and line[end[1]:].isspace():
+            open_rows[depth].append(row)
 
         # Keep track of bracket depth.
         if token_type == tokenize.OP:
             if text in '([{':
                 depth += 1
                 indent.append(0)
+                hangs.append(None)
+                if len(open_rows) == depth:
+                    open_rows.append([])
+                open_rows[depth].append(row)
                 parens[row] += 1
             elif text in ')]}' and depth > 0:
                 # Parent indents should not be more than this one.
                 prev_indent = indent.pop() or last_indent[1]
+                hangs.pop()
                 for d in range(depth):
                     if indent[d] > prev_indent:
                         indent[d] = 0
                 for ind in list(indent_chances):
                     if ind >= prev_indent:
                         del indent_chances[ind]
+                del open_rows[depth + 1:]
                 depth -= 1
                 if depth:
                     indent_chances[indent[depth]] = True
                 for idx in range(row, -1, -1):
                     if parens[idx]:
                         parens[idx] -= 1
-                        rel_indent[row] = rel_indent[idx]
                         break
             assert len(indent) == depth + 1
             if (
@@ -316,6 +338,9 @@ def continued_indentation(logical_line, tokens, indent_level, noqa):
                 indent_chances[start[1]] = text
 
         last_token_multiline = (start[0] != end[0])
+        if last_token_multiline:
+            rel_indent[end[0] - first_row] = rel_indent[row]
+
         last_line = line
 
     if (
@@ -323,8 +348,9 @@ def continued_indentation(logical_line, tokens, indent_level, noqa):
         not last_line_begins_with_multiline and
         pep8.expand_indent(line) == indent_level + DEFAULT_INDENT_SIZE
     ):
-        yield (last_indent, 'E125 {0}'.format(indent_level +
-                                              2 * DEFAULT_INDENT_SIZE))
+        pos = (start[0], indent[0] + 4)
+        yield (pos, 'E125 {0}'.format(indent_level +
+                                      2 * DEFAULT_INDENT_SIZE))
 del pep8._checks['logical_line'][pep8.continued_indentation]
 pep8.register_check(continued_indentation)
 
@@ -382,7 +408,10 @@ class FixPEP8(object):
             set() if long_line_ignore_cache is None
             else long_line_ignore_cache)
 
-        # method definition
+        # Many fixers are the same even though pep8 categorizes them
+        # differently.
+        self.fix_e115 = self.fix_e112
+        self.fix_e116 = self.fix_e113
         self.fix_e121 = self._fix_reindent
         self.fix_e122 = self._fix_reindent
         self.fix_e123 = self._fix_reindent
@@ -501,15 +530,20 @@ class FixPEP8(object):
                 n=len(results), progress=progress), file=sys.stderr)
 
         if self.options.line_range:
-            results = [
-                r for r in results
-                if self.options.line_range[0] <= r['line'] <=
-                self.options.line_range[1]]
+            start, end = self.options.line_range
+            results = [r for r in results
+                       if start <= r['line'] <= end]
 
         self._fix_source(filter_results(source=''.join(self.source),
                                         results=results,
-                                        aggressive=self.options.aggressive,
-                                        indent_size=self.options.indent_size))
+                                        aggressive=self.options.aggressive))
+
+        if self.options.line_range:
+            # If number of lines has changed then change line_range.
+            count = sum(sline.count('\n')
+                        for sline in self.source[start - 1:end])
+            self.options.line_range[1] = start + count - 1
+
         return ''.join(self.source)
 
     def _fix_reindent(self, result):
@@ -523,6 +557,31 @@ class FixPEP8(object):
         target = self.source[line_index]
 
         self.source[line_index] = ' ' * num_indent_spaces + target.lstrip()
+
+    def fix_e112(self, result):
+        """Fix under-indented comments."""
+        line_index = result['line'] - 1
+        target = self.source[line_index]
+
+        if not target.lstrip().startswith('#'):
+            # Don't screw with invalid syntax.
+            return []
+
+        self.source[line_index] = self.indent_word + target
+
+    def fix_e113(self, result):
+        """Fix over-indented comments."""
+        line_index = result['line'] - 1
+        target = self.source[line_index]
+
+        indent = _get_indentation(target)
+        stripped = target.lstrip()
+
+        if not stripped.startswith('#'):
+            # Don't screw with invalid syntax.
+            return []
+
+        self.source[line_index] = indent[1:] + stripped
 
     def fix_e125(self, result):
         """Fix indentation undistinguish from the next logical line."""
@@ -903,6 +962,18 @@ class FixPEP8(object):
 
             self.source[line_index] = left + new_right
 
+    def fix_e713(self, result):
+        """Fix non-membership check."""
+        line_index = result['line'] - 1
+        target = self.source[line_index]
+
+        # Handle very easy case only.
+        if re.match(r'^\s*if not \w+ in \w+:$', target):
+            self.source[line_index] = re.sub(r'if not (\w+) in (\w+):',
+                                             r'if \1 not in \2:',
+                                             target,
+                                             count=1)
+
     def fix_w291(self, result):
         """Remove trailing whitespace."""
         fixed_line = self.source[result['line'] - 1].rstrip()
@@ -912,6 +983,12 @@ class FixPEP8(object):
 def get_fixed_long_line(target, previous_line, original,
                         indent_word='    ', max_line_length=79,
                         aggressive=False, experimental=False, verbose=False):
+    """Break up long line and return result.
+
+    Do this by generating multiple reformatted candidates and then
+    ranking the candidates to heuristically select the best option.
+
+    """
     indent = _get_indentation(target)
     source = target[len(indent):]
     assert source.lstrip() == source
@@ -932,7 +1009,8 @@ def get_fixed_long_line(target, previous_line, original,
         sorted(set(candidates).union([target, original])),
         key=lambda x: line_shortening_rank(x,
                                            indent_word,
-                                           max_line_length))
+                                           max_line_length,
+                                           experimental))
 
     if verbose >= 4:
         print(('-' * 79 + '\n').join([''] + candidates + ['']),
@@ -982,7 +1060,7 @@ def untokenize_without_newlines(tokens):
 
 
 def _find_logical(source_lines):
-    # make a variable which is the index of all the starts of lines
+    # Make a variable which is the index of all the starts of lines.
     logical_start = []
     logical_end = []
     last_newline = True
@@ -1071,7 +1149,7 @@ def split_and_strip_non_empty_lines(text):
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
-def fix_e269(source, aggressive=False):
+def fix_e265(source, aggressive=False):  # pylint: disable=unused-argument
     """Format block comments."""
     if '#' not in source:
         # Optimization.
@@ -1217,7 +1295,7 @@ def get_diff_text(old, new, filename):
         text += line
 
         # Work around missing newline (http://bugs.python.org/issue2142).
-        if not line.endswith(newline):
+        if text and not line.endswith(newline):
             text += newline + r'\ No newline at end of file' + newline
 
     return text
@@ -1291,7 +1369,6 @@ def shorten_line(tokens, source, indentation, indent_word, max_line_length,
                 tokens=tokens,
                 source=source,
                 indentation=indentation,
-                indent_word=indent_word,
                 max_line_length=max_line_length):
 
             yield shortened
@@ -1429,16 +1506,25 @@ class ReformattedLines(object):
     ###########################################################################
     # Public Methods
 
-    def add(self, obj, indent_amt):
+    def add(self, obj, indent_amt, break_after_open_bracket):
         if isinstance(obj, Atom):
             self._add_item(obj, indent_amt)
             return
 
-        self._add_container(obj, indent_amt)
+        self._add_container(obj, indent_amt, break_after_open_bracket)
 
     def add_comment(self, item):
-        self._lines.append(self._Space())
-        self._lines.append(self._Space())
+        num_spaces = 2
+        if len(self._lines) > 1:
+            if isinstance(self._lines[-1], self._Space):
+                num_spaces -= 1
+            if len(self._lines) > 2:
+                if isinstance(self._lines[-2], self._Space):
+                    num_spaces -= 1
+
+        while num_spaces > 0:
+            self._lines.append(self._Space())
+            num_spaces -= 1
         self._lines.append(item)
 
     def add_indent(self, indent_amt):
@@ -1460,8 +1546,8 @@ class ReformattedLines(object):
             return
 
         prev_text = unicode(self._prev_item)
-        prev_prev_text = \
-            unicode(self._prev_prev_item) if self._prev_prev_item else ''
+        prev_prev_text = (
+            unicode(self._prev_prev_item) if self._prev_prev_item else '')
 
         if (
             # The previous item was a keyword or identifier and the current
@@ -1494,9 +1580,13 @@ class ReformattedLines(object):
                  (self._prev_prev_item.is_name or
                   self._prev_prev_item.is_number or
                   self._prev_prev_item.is_string)) and
-               prev_text in ('+', '-', '%', '*', '/', '//', '**')))))
+                prev_text in ('+', '-', '%', '*', '/', '//', '**')))))
         ):
             self._lines.append(self._Space())
+
+    def previous_item(self):
+        """Return the previous non-whitespace item."""
+        return self._prev_item
 
     def fits_on_current_line(self, item_extent):
         return self.current_size() + item_extent <= self._max_line_length
@@ -1569,24 +1659,41 @@ class ReformattedLines(object):
             self._bracket_depth -= 1
             assert self._bracket_depth >= 0
 
-    def _add_container(self, container, indent_amt):
+    def _add_container(self, container, indent_amt, break_after_open_bracket):
+        actual_indent = indent_amt + 1
+
         if (
             unicode(self._prev_item) != '=' and
             not self.line_empty() and
             not self.fits_on_current_line(
-                container.size + self._bracket_depth + 2) and
-
-            # Don't split before the opening bracket of a call.
-            (unicode(container)[0] != '(' or not self._prev_item.is_name)
+                container.size + self._bracket_depth + 2)
         ):
-            # If the container doesn't fit on the current line and the current
-            # line isn't empty, place the container on the next line.
-            self._lines.append(self._LineBreak())
-            self._lines.append(self._Indent(indent_amt))
+
+            if unicode(container)[0] == '(' and self._prev_item.is_name:
+                # Don't split before the opening bracket of a call.
+                break_after_open_bracket = True
+                actual_indent = indent_amt + 4
+            elif (
+                break_after_open_bracket or
+                unicode(self._prev_item) not in '([{'
+            ):
+                # If the container doesn't fit on the current line and the
+                # current line isn't empty, place the container on the next
+                # line.
+                self._lines.append(self._LineBreak())
+                self._lines.append(self._Indent(indent_amt))
+                break_after_open_bracket = False
+        else:
+            actual_indent = self.current_size() + 1
+            break_after_open_bracket = False
+
+        if isinstance(container, (ListComprehension, IfExpression)):
+            actual_indent = indent_amt
 
         # Increase the continued indentation only if recursing on a
         # container.
-        container.reflow(self, ' ' * (indent_amt + 1))
+        container.reflow(self, ' ' * actual_indent,
+                         break_after_open_bracket=break_after_open_bracket)
 
     def _prevent_default_initializer_splitting(self, item, indent_amt):
         """Prevent splitting between a default initializer.
@@ -1636,9 +1743,15 @@ class ReformattedLines(object):
 
         last_space = None
         for item in reversed(self._lines):
+            if (
+                last_space and
+                (not isinstance(item, Atom) or not item.is_colon)
+            ):
+                break
+            else:
+                last_space = None
             if isinstance(item, self._Space):
                 last_space = item
-                break
             if isinstance(item, (self._LineBreak, self._Indent)):
                 return
 
@@ -1693,21 +1806,32 @@ class Atom(object):
     def __len__(self):
         return self.size
 
-    def reflow(self, reflowed_lines, continued_indent,
-               break_after_open_bracket=False):
+    def reflow(
+        self, reflowed_lines, continued_indent, extent,
+        break_after_open_bracket=False,
+        is_list_comp_or_if_expr=False,
+        next_is_dot=False
+    ):
         if self._atom.token_type == tokenize.COMMENT:
             reflowed_lines.add_comment(self)
             return
 
-        total_size = self.size
+        total_size = extent if extent else self.size
 
         if self._atom.token_string not in ',:([{}])':
             # Some atoms will need an extra 1-sized space token after them.
             total_size += 1
 
+        prev_item = reflowed_lines.previous_item()
         if (
+            not is_list_comp_or_if_expr and
             not reflowed_lines.fits_on_current_line(total_size) and
-            not reflowed_lines.line_empty()
+            not (next_is_dot and
+                 reflowed_lines.fits_on_current_line(self.size + 1)) and
+            not reflowed_lines.line_empty() and
+            not self.is_colon and
+            not (prev_item and prev_item.is_name and
+                 unicode(self) == '(')
         ):
             # Start a new line if there is already something on the line and
             # adding this atom would make it go over the max line length.
@@ -1715,7 +1839,8 @@ class Atom(object):
         else:
             reflowed_lines.add_space_if_needed(unicode(self))
 
-        reflowed_lines.add(self, len(continued_indent))
+        reflowed_lines.add(self, len(continued_indent),
+                           break_after_open_bracket)
 
     def emit(self):
         return self.__repr__()
@@ -1788,13 +1913,27 @@ class Container(object):
 
     def reflow(self, reflowed_lines, continued_indent,
                break_after_open_bracket=False):
+        last_was_container = False
         for (index, item) in enumerate(self._items):
-            if isinstance(item, Atom):
-                item.reflow(reflowed_lines, continued_indent)
-            else:  # isinstance(item, Container)
-                reflowed_lines.add(item, len(continued_indent))
-
             next_item = get_item(self._items, index + 1)
+
+            if isinstance(item, Atom):
+                is_list_comp_or_if_expr = (
+                    isinstance(self, (ListComprehension, IfExpression)))
+                item.reflow(reflowed_lines, continued_indent,
+                            self._get_extent(index),
+                            is_list_comp_or_if_expr=is_list_comp_or_if_expr,
+                            next_is_dot=(next_item and
+                                         unicode(next_item) == '.'))
+                if last_was_container and item.is_comma:
+                    reflowed_lines.add_line_break(continued_indent)
+                last_was_container = False
+            else:  # isinstance(item, Container)
+                reflowed_lines.add(item, len(continued_indent),
+                                   break_after_open_bracket)
+                last_was_container = not isinstance(item, (ListComprehension,
+                                                           IfExpression))
+
             if (
                 break_after_open_bracket and index == 0 and
                 # Prefer to keep empty containers together instead of
@@ -1805,6 +1944,56 @@ class Container(object):
             ):
                 reflowed_lines.add_line_break(continued_indent)
                 break_after_open_bracket = False
+            else:
+                next_next_item = get_item(self._items, index + 2)
+                if (
+                    unicode(item) not in ['.', '%', 'in'] and
+                    next_item and not isinstance(next_item, Container) and
+                    unicode(next_item) != ':' and
+                    next_next_item and (not isinstance(next_next_item, Atom) or
+                                        unicode(next_item) == 'not') and
+                    not reflowed_lines.line_empty() and
+                    not reflowed_lines.fits_on_current_line(
+                        self._get_extent(index + 1) + 2)
+                ):
+                    reflowed_lines.add_line_break(continued_indent)
+
+    def _get_extent(self, index):
+        """The extent of the full element.
+
+        E.g., the length of a function call or keyword.
+
+        """
+        extent = 0
+        prev_item = get_item(self._items, index - 1)
+        seen_dot = prev_item and unicode(prev_item) == '.'
+        while index < len(self._items):
+            item = get_item(self._items, index)
+            index += 1
+
+            if isinstance(item, (ListComprehension, IfExpression)):
+                break
+
+            if isinstance(item, Container):
+                if prev_item and prev_item.is_name:
+                    if seen_dot:
+                        extent += 1
+                    else:
+                        extent += item.size
+
+                    prev_item = item
+                    continue
+            elif (unicode(item) not in ['.', '=', ':', 'not'] and
+                  not item.is_name and not item.is_string):
+                break
+
+            if unicode(item) == '.':
+                seen_dot = True
+
+            extent += item.size
+            prev_item = item
+
+        return extent
 
     @property
     def is_string(self):
@@ -1816,6 +2005,10 @@ class Container(object):
 
     @property
     def is_keyword(self):
+        return False
+
+    @property
+    def is_name(self):
         return False
 
     @property
@@ -1877,6 +2070,15 @@ class DictOrSet(Container):
 class ListComprehension(Container):
 
     """A high-level representation of a list comprehension."""
+
+    @property
+    def size(self):
+        length = 0
+        for item in self._items:
+            if isinstance(item, IfExpression):
+                break
+            length += item.size
+        return length
 
 
 class IfExpression(Container):
@@ -1940,6 +2142,8 @@ def _parse_container(tokens, index, for_or_if=None):
 
         index += 1
 
+    return (None, None)
+
 
 def _parse_tokens(tokens):
     """Parse the tokens.
@@ -1963,6 +2167,8 @@ def _parse_tokens(tokens):
 
         if tok.token_string in '([{':
             (container, index) = _parse_container(tokens, index)
+            if not container:
+                return None
             parsed_tokens.append(container)
         else:
             parsed_tokens.append(Atom(tok))
@@ -1972,7 +2178,7 @@ def _parse_tokens(tokens):
     return parsed_tokens
 
 
-def _reflow_lines(parsed_tokens, indentation, indent_word, max_line_length,
+def _reflow_lines(parsed_tokens, indentation, max_line_length,
                   start_on_prefix_line):
     """Reflow the lines so that it looks nice."""
 
@@ -1985,7 +2191,20 @@ def _reflow_lines(parsed_tokens, indentation, indent_word, max_line_length,
     break_after_open_bracket = not start_on_prefix_line
 
     lines = ReformattedLines(max_line_length)
-    lines.add_indent(len(indentation))
+    lines.add_indent(len(indentation.lstrip('\r\n')))
+
+    if not start_on_prefix_line:
+        # If splitting after the opening bracket will cause the first element
+        # to be aligned weirdly, don't try it.
+        first_token = get_item(parsed_tokens, 0)
+        second_token = get_item(parsed_tokens, 1)
+
+        if (
+            first_token and second_token and
+            unicode(second_token)[0] == '(' and
+            len(indentation) + len(first_token) + 1 == len(continued_indent)
+        ):
+            return None
 
     for item in parsed_tokens:
         lines.add_space_if_needed(unicode(item), equal=True)
@@ -2001,7 +2220,7 @@ def _reflow_lines(parsed_tokens, indentation, indent_word, max_line_length,
     return lines.emit()
 
 
-def _shorten_line_at_tokens_new(tokens, source, indentation, indent_word,
+def _shorten_line_at_tokens_new(tokens, source, indentation,
                                 max_line_length):
     """Shorten the line taking its length into account.
 
@@ -2018,14 +2237,14 @@ def _shorten_line_at_tokens_new(tokens, source, indentation, indent_word,
     if parsed_tokens:
         # Perform two reflows. The first one starts on the same line as the
         # prefix. The second starts on the line after the prefix.
-        fixed = _reflow_lines(parsed_tokens, indentation, indent_word,
-                              max_line_length, start_on_prefix_line=True)
-        if check_syntax(normalize_multiline(fixed.lstrip())):
+        fixed = _reflow_lines(parsed_tokens, indentation, max_line_length,
+                              start_on_prefix_line=True)
+        if fixed and check_syntax(normalize_multiline(fixed.lstrip())):
             yield fixed
 
-        fixed = _reflow_lines(parsed_tokens, indentation, indent_word,
-                              max_line_length, start_on_prefix_line=False)
-        if check_syntax(normalize_multiline(fixed.lstrip())):
+        fixed = _reflow_lines(parsed_tokens, indentation, max_line_length,
+                              start_on_prefix_line=False)
+        if fixed and check_syntax(normalize_multiline(fixed.lstrip())):
             yield fixed
 
 
@@ -2152,6 +2371,8 @@ def normalize_multiline(line):
     elif line.startswith('@'):
         return line + 'def _(): pass'
     elif line.startswith('class '):
+        return line + ' pass'
+    elif line.startswith('if '):
         return line + ' pass'
     else:
         return line
@@ -2285,8 +2506,8 @@ class Reindenter(object):
                                 if have == _leading_space_count(lines[jline]):
                                     want = jlevel * indent_size
                                 break
-                    if want < 0:           # Maybe it's a hanging
-                                           # comment like this one,
+                    if want < 0:            # Maybe it's a hanging
+                                            # comment like this one,
                         # in which case we should shift it like its base
                         # line got shifted.
                         for j in range(i - 1, -1, -1):
@@ -2340,8 +2561,8 @@ def _reindent_stats(tokens):
     our headache!
 
     """
-    find_stmt = 1  # next token begins a fresh stmt?
-    level = 0  # current indent level
+    find_stmt = 1  # Next token begins a fresh stmt?
+    level = 0  # Current indent level.
     stats = []
 
     for t in tokens:
@@ -2366,8 +2587,8 @@ def _reindent_stats(tokens):
         elif token_type == tokenize.COMMENT:
             if find_stmt:
                 stats.append((sline, -1))
-                # but we're still looking for a new stmt, so leave
-                # find_stmt alone
+                # But we're still looking for a new stmt, so leave
+                # find_stmt alone.
 
         elif token_type == tokenize.NL:
             pass
@@ -2377,7 +2598,7 @@ def _reindent_stats(tokens):
             # must be the first token of the next program statement, or an
             # ENDMARKER.
             find_stmt = 0
-            if line:   # not endmarker
+            if line:   # Not endmarker.
                 stats.append((sline, level))
 
     return stats
@@ -2416,7 +2637,7 @@ def check_syntax(code):
         return False
 
 
-def filter_results(source, results, aggressive, indent_size):
+def filter_results(source, results, aggressive):
     """Filter out spurious reports from pep8.
 
     If aggressive is True, we allow possibly unsafe fixes (E711, E712).
@@ -2453,7 +2674,7 @@ def filter_results(source, results, aggressive, indent_size):
                 continue
 
         if aggressive <= 1:
-            if issue_id.startswith(('e712', )):
+            if issue_id.startswith(('e712', 'e713')):
                 continue
 
         if r['line'] in commented_out_code_line_numbers:
@@ -2600,7 +2821,7 @@ def fix_code(source, options=None):
         options = parse_args([''])
 
     if not isinstance(source, unicode):
-        source = source.decode(locale.getpreferredencoding(False))
+        source = source.decode(locale.getpreferredencoding())
 
     sio = io.StringIO(source)
     return fix_lines(sio.readlines(), options=options)
@@ -2617,7 +2838,7 @@ def fix_lines(source_lines, options, filename=''):
     previous_hashes = set()
 
     if options.line_range:
-        fixed_source = tmp_source
+        fixed_source = apply_local_fixes(tmp_source, options)
     else:
         # Apply global fixes only once (for efficiency).
         fixed_source = apply_global_fixes(tmp_source, options)
@@ -2700,7 +2921,7 @@ def global_fixes():
                 yield (code, function)
 
 
-def apply_global_fixes(source, options):
+def apply_global_fixes(source, options, where='global'):
     """Run global fixes on source code.
 
     These are fixes that only need be done once (unlike those in
@@ -2714,7 +2935,8 @@ def apply_global_fixes(source, options):
     for (code, function) in global_fixes():
         if code_match(code, select=options.select, ignore=options.ignore):
             if options.verbose:
-                print('--->  Applying global fix for {0}'.format(code.upper()),
+                print('--->  Applying {0} fix for {1}'.format(where,
+                                                              code.upper()),
                       file=sys.stderr)
             source = function(source,
                               aggressive=options.aggressive)
@@ -2725,6 +2947,180 @@ def apply_global_fixes(source, options):
                       ignore=options.ignore)
 
     return source
+
+
+def apply_local_fixes(source, options):
+    """Ananologus to apply_global_fixes, but runs only those which makes sense
+    for the given line_range.
+
+    Do as much as we can without breaking code.
+
+    """
+    def find_ge(a, x):
+        """Find leftmost item greater than or equal to x."""
+        i = bisect.bisect_left(a, x)
+        if i != len(a):
+            return i, a[i]
+        return len(a) - 1, a[-1]
+
+    def find_le(a, x):
+        """Find rightmost value less than or equal to x."""
+        i = bisect.bisect_right(a, x)
+        if i:
+            return i - 1, a[i - 1]
+        return 0, a[0]
+
+    def local_fix(source, start_log, end_log,
+                  start_lines, end_lines, indents, last_line):
+        """apply_global_fixes to the source between start_log and end_log.
+
+        The subsource must be the correct syntax of a complete python program
+        (but all lines may share an indentation). The subsource's shared indent
+        is removed, fixes are applied and the indent prepended back. Taking
+        care to not reindent strings.
+
+        last_line is the strict cut off (options.line_range[1]), so that
+        lines after last_line are not modified.
+
+        """
+        if end_log < start_log:
+            return source
+
+        ind = indents[start_log]
+        indent = _get_indentation(source[start_lines[start_log]])
+
+        sl = slice(start_lines[start_log], end_lines[end_log] + 1)
+
+        subsource = source[sl]
+        # Remove indent from subsource.
+        if ind:
+            for line_no in start_lines[start_log:end_log + 1]:
+                pos = line_no - start_lines[start_log]
+                subsource[pos] = subsource[pos][ind:]
+
+        # Fix indentation of subsource.
+        fixed_subsource = apply_global_fixes(''.join(subsource),
+                                             options,
+                                             where='local')
+        fixed_subsource = fixed_subsource.splitlines(True)
+
+        # Add back indent for non multi-line strings lines.
+        msl = multiline_string_lines(''.join(fixed_subsource),
+                                     include_docstrings=False)
+        for i, line in enumerate(fixed_subsource):
+            if not i + 1 in msl:
+                fixed_subsource[i] = indent + line if line != '\n' else line
+
+        # We make a special case to look at the final line, if it's a multiline
+        # *and* the cut off is somewhere inside it, we take the fixed
+        # subset up until last_line, this assumes that the number of lines
+        # does not change in this multiline line.
+        changed_lines = len(fixed_subsource)
+        if (start_lines[end_log] != end_lines[end_log]
+                and end_lines[end_log] > last_line):
+            after_end = end_lines[end_log] - last_line
+            fixed_subsource = (fixed_subsource[:-after_end] +
+                               source[sl][-after_end:])
+            changed_lines -= after_end
+
+            options.line_range[1] = (options.line_range[0] +
+                                     changed_lines - 1)
+
+        return (source[:start_lines[start_log]] +
+                fixed_subsource +
+                source[end_lines[end_log] + 1:])
+
+    def is_continued_stmt(line,
+                          continued_stmts=frozenset(['else', 'elif',
+                                                     'finally', 'except'])):
+        return re.split('[ :]', line.strip(), 1)[0] in continued_stmts
+
+    assert options.line_range
+    start, end = options.line_range
+    start -= 1
+    end -= 1
+    last_line = end  # We shouldn't modify lines after this cut-off.
+
+    try:
+        logical = _find_logical(source)
+    except (SyntaxError, tokenize.TokenError):
+        return ''.join(source)
+
+    if not logical[0]:
+        # Just blank lines, this should imply that it will become '\n' ?
+        return apply_global_fixes(source, options)
+
+    start_lines, indents = zip(*logical[0])
+    end_lines, _ = zip(*logical[1])
+
+    source = source.splitlines(True)
+
+    start_log, start = find_ge(start_lines, start)
+    end_log, end = find_le(start_lines, end)
+
+    # Look behind one line, if it's indented less than current indent
+    # then we can move to this previous line knowing that its
+    # indentation level will not be changed.
+    if (start_log > 0
+            and indents[start_log - 1] < indents[start_log]
+            and not is_continued_stmt(source[start_log - 1])):
+        start_log -= 1
+        start = start_lines[start_log]
+
+    while start < end:
+
+        if is_continued_stmt(source[start]):
+            start_log += 1
+            start = start_lines[start_log]
+            continue
+
+        ind = indents[start_log]
+        for t in itertools.takewhile(lambda t: t[1][1] >= ind,
+                                     enumerate(logical[0][start_log:])):
+            n_log, n = start_log + t[0], t[1][0]
+        # start shares indent up to n.
+
+        if n <= end:
+            source = local_fix(source, start_log, n_log,
+                               start_lines, end_lines,
+                               indents, last_line)
+            start_log = n_log if n == end else n_log + 1
+            start = start_lines[start_log]
+            continue
+
+        else:
+            # Look at the line after end and see if allows us to reindent.
+            after_end_log, after_end = find_ge(start_lines, end + 1)
+
+            if indents[after_end_log] > indents[start_log]:
+                start_log, start = find_ge(start_lines, start + 1)
+                continue
+
+            if (indents[after_end_log] == indents[start_log]
+                    and is_continued_stmt(source[after_end])):
+                # find n, the beginning of the last continued statement
+                # Apply fix to previous block if there is one.
+                only_block = True
+                for n, n_ind in logical[0][start_log:end_log + 1][::-1]:
+                    if n_ind == ind and not is_continued_stmt(source[n]):
+                        n_log = start_lines.index(n)
+                        source = local_fix(source, start_log, n_log - 1,
+                                           start_lines, end_lines,
+                                           indents, last_line)
+                        start_log = n_log + 1
+                        start = start_lines[start_log]
+                        only_block = False
+                        break
+                if only_block:
+                    end_log, end = find_le(start_lines, end - 1)
+                continue
+
+            source = local_fix(source, start_log, end_log,
+                               start_lines, end_lines,
+                               indents, last_line)
+            break
+
+    return ''.join(source)
 
 
 def extract_code_from_function(function):
@@ -2872,6 +3268,13 @@ def parse_args(arguments):
     if args.jobs > 1 and not args.in_place:
         parser.error('parallel jobs requires --in-place')
 
+    if args.line_range:
+        if args.line_range[0] <= 0:
+            parser.error('--range must be positive numbers')
+        if args.line_range[0] > args.line_range[1]:
+            parser.error('First value of --range should be less than or equal '
+                         'to the second')
+
     return args
 
 
@@ -2916,7 +3319,8 @@ def docstring_summary(docstring):
     return docstring.split('\n')[0]
 
 
-def line_shortening_rank(candidate, indent_word, max_line_length):
+def line_shortening_rank(candidate, indent_word, max_line_length,
+                         experimental=False):
     """Return rank of candidate.
 
     This is for sorting candidates.
@@ -2933,12 +3337,18 @@ def line_shortening_rank(candidate, indent_word, max_line_length):
         not lines[0].lstrip().startswith('#') and
         lines[0].rstrip()[-1] not in '([{'
     ):
-        for symbol in '([{':
-            offset = max(offset, 1 + lines[0].find(symbol))
+        for (opening, closing) in ('()', '[]', '{}'):
+            # Don't penalize empty containers that aren't split up. Things like
+            # this "foo(\n    )" aren't particularly good.
+            opening_loc = lines[0].find(opening)
+            closing_loc = lines[0].find(closing)
+            if opening_loc >= 0:
+                if closing_loc < 0 or closing_loc != opening_loc + 1:
+                    offset = max(offset, 1 + opening_loc)
 
     current_longest = max(offset + len(x.strip()) for x in lines)
 
-    rank += 2 * max(0, current_longest - max_line_length)
+    rank += 4 * max(0, current_longest - max_line_length)
 
     rank += len(lines)
 
@@ -2971,13 +3381,20 @@ def line_shortening_rank(candidate, indent_word, max_line_length):
             if current_line == bad_start:
                 rank += 1000
 
-        if current_line.endswith(('(', '[', '{')):
+        if current_line.endswith(('(', '[', '{', '.')):
             # Avoid lonely opening. They result in longer lines.
             if len(current_line) <= len(indent_word):
                 rank += 100
 
-            # Avoid ugliness of ", (\n".
-            if current_line.endswith(','):
+            # Avoid the ugliness of ", (\n".
+            if (
+                current_line.endswith('(') and
+                current_line[:-1].rstrip().endswith(',')
+            ):
+                rank += 100
+
+            # Also avoid the ugliness of "foo.\nbar"
+            if current_line.endswith('.'):
                 rank += 100
 
             if has_arithmetic_operator(current_line):
@@ -3014,7 +3431,7 @@ def line_shortening_rank(candidate, indent_word, max_line_length):
             if total_len < max_line_length:
                 rank += 10
             else:
-                rank += 1
+                rank += 100 if experimental else 1
 
         # Prefer breaking at commas rather than colon.
         if ',' in current_line and current_line.endswith(':'):

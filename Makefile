@@ -65,7 +65,7 @@ benchmark:
 
 readme:
 	${PYTHON} update_readme.py
-	@${PYTHON} setup.py --long-description | rst2html --strict > README.html
+	@rstcheck README.rst
 	@${PYTHON} -m doctest -v README.rst
 
 open_readme: readme
@@ -77,10 +77,14 @@ check:
 		--reports=no \
 		--msg-template='{path}:{line}: [{msg_id}({symbol}), {obj}] {msg}' \
 		--disable=bad-builtin \
+		--disable=bad-continuation \
 		--disable=fixme \
 		--disable=invalid-name \
+		--disable=locally-disabled \
 		--disable=missing-docstring \
+		--disable=no-member \
 		--disable=no-self-use \
+		--disable=not-callable \
 		--disable=protected-access \
 		--disable=star-args \
 		--disable=too-few-public-methods \
@@ -91,17 +95,19 @@ check:
 		--disable=too-many-locals \
 		--disable=too-many-public-methods \
 		--disable=too-many-statements \
-		--disable=unused-argument \
+		--disable=undefined-loop-variable \
 		--rcfile=/dev/null autopep8.py setup.py update_readme.py
 	pylint \
 		--reports=no \
 		--msg-template='{path}:{line}: [{msg_id}({symbol}), {obj}] {msg}' \
 		--max-module-lines=2500 \
+		--disable=bad-continuation \
 		--disable=blacklisted-name \
 		--disable=duplicate-code \
 		--disable=import-error \
 		--disable=invalid-name \
 		--disable=line-too-long \
+		--disable=star-args \
 		--disable=missing-docstring \
 		--disable=no-member \
 		--disable=protected-access \

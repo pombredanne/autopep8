@@ -2,7 +2,7 @@
 autopep8
 ========
 
-.. image:: https://travis-ci.org/hhatto/autopep8.png?branch=master
+.. image:: https://travis-ci.org/hhatto/autopep8.svg?branch=master
     :target: https://travis-ci.org/hhatto/autopep8
     :alt: Build status
 
@@ -14,6 +14,8 @@ can be reported by pep8.
 .. _PEP 8: http://www.python.org/dev/peps/pep-0008/
 .. _issues: https://pep8.readthedocs.org/en/latest/intro.html#error-codes
 
+.. contents::
+
 
 Installation
 ============
@@ -21,6 +23,10 @@ Installation
 From pip::
 
     $ pip install --upgrade autopep8
+
+Consider using the ``--user`` option_.
+
+.. _option: https://pip.readthedocs.org/en/latest/user_guide.html#user-installs
 
 
 Requirements
@@ -47,7 +53,7 @@ Before running autopep8.
     def example1():
         ####This is a long comment. This should be wrapped to fit within 72 characters.
         some_tuple=(   1,2, 3,'a'  );
-        some_variable={'long':'Long code lines should be wrapped witihn 79 characters.',
+        some_variable={'long':'Long code lines should be wrapped within 79 characters.',
         'other':[math.pi, 100,200,300,9876543210,'This is a long string that goes on'],
         'more':{'inner':'This whole logical line should be wrapped.',some_tuple:[1,
         20,300,40000,500000000,60000000000000000]}}
@@ -77,7 +83,7 @@ After running autopep8.
         # characters.
         some_tuple = (1, 2, 3, 'a')
         some_variable = {
-            'long': 'Long code lines should be wrapped witihn 79 characters.',
+            'long': 'Long code lines should be wrapped within 79 characters.',
             'other': [
                 math.pi,
                 100,
@@ -184,7 +190,7 @@ autopep8 fixes the following issues_ reported by pep8_::
     E242 - Remove extraneous whitespace around operator.
     E251 - Remove whitespace around parameter '=' sign.
     E26  - Fix spacing after comment hash for inline comments.
-    E269 - Fix spacing after comment hash for block comments.
+    E265 - Fix spacing after comment hash for block comments.
     E27  - Fix extraneous whitespace around keywords.
     E301 - Add missing blank line.
     E302 - Add missing 2 blank lines.
@@ -213,7 +219,6 @@ autopep8 also fixes some issues not found by pep8_.
 - Correct deprecated or non-idiomatic Python code (via ``lib2to3``). Use this
   for making Python 2.6 and 2.7 code more compatible with Python 3. (This is
   triggered if ``W690`` is enabled.)
-- Format block comments. (This is triggered if ``E269`` is enabled.)
 - Normalize files with mixed line endings.
 - Put a blank line between a class declaration and its first method
   declaration. (Enabled with ``E309``.)
@@ -221,6 +226,17 @@ autopep8 also fixes some issues not found by pep8_.
   declaration. (Enabled with ``E301``.)
 - Remove blank lines between a function declaration and its docstring. (Enabled
   with ``E303``.)
+
+autopep8 avoids fixing some issues found by pep8_.
+
+- ``E112``/``E113`` for non comments are reports of bad indentation that break
+  syntax rules. These should not be modified at all.
+- ``E265``, which refers to spacing after comment hash, is ignored if the
+  comment looks like code. autopep8 avoids modifying these since they are not
+  real comments. If you really want to get rid of the pep8_ warning, consider
+  just removing the commented-out code. (This can be automated via eradicate_.)
+
+.. _eradicate: https://github.com/myint/eradicate
 
 
 More advanced usage
@@ -273,6 +289,13 @@ function.
 >>> autopep8.fix_code('x=       123\n')
 'x = 123\n'
 
+Or with command-line options:
+
+>>> import autopep8
+>>> autopep8.fix_code('x.has_key(y)\n',
+...                   options=autopep8.parse_args(['--aggressive', '']))
+'y in x\n'
+
 
 Testing
 =======
@@ -290,6 +313,21 @@ code fixes. It can check that the bytecode remains identical.
 ``test/acid_pypi.py`` makes use of ``acid.py`` to test against the latest
 released packages on PyPI. In a similar fashion, ``test/acid_github.py`` tests
 against Python code in Github repositories.
+
+
+Troubleshooting
+===============
+
+``pkg_resources.DistributionNotFound``
+--------------------------------------
+
+If you are using an ancient version of ``setuptools``, you might encounter
+``pkg_resources.DistributionNotFound`` when trying to run ``autopep8``. Try
+upgrading ``setuptools`` to workaround this ``setuptools`` problem::
+
+    $ pip install --upgrade setuptools
+
+Use ``sudo`` if you are installing to the system.
 
 
 Links

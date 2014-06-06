@@ -1,13 +1,12 @@
-autopep8 is written and maintained by Hideo Hattori and various contributors.
-
-Contributors
-------------
+Main contributors
+-----------------
+- Hideo Hattori (https://github.com/hhatto)
 - Steven Myint (https://github.com/myint)
 - Bill Wendling (https://github.com/gwelymernans)
 
-Patches, Bug Reports, and Suggestions
--------------------------------------
-- Fraser Tweedale
+Patches
+-------
+- Fraser Tweedale (https://github.com/frasertweedale)
 - clach04 (https://github.com/clach04)
 - Marc Abramowitz (https://github.com/msabramo)
 - dellis23 (https://github.com/dellis23)
@@ -19,3 +18,4 @@ Patches, Bug Reports, and Suggestions
 - Erik Bray (https://github.com/iguananaut)
 - Christopher Medrela (https://github.com/chrismedrela)
 - 小明 (https://github.com/dongweiming)
+- Andy Hayden (https://github.com/hayd)
